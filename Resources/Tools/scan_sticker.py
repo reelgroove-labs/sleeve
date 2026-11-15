@@ -210,6 +210,24 @@ def main():
                     if len(b_) and float(np.linalg.norm(np.median(b_, 0) - st_c)) < 30:
                         break
                     os_ -= 1
+                # Een smal schaduwlijntje langs één rand (Queen 2021, onderkant: 3 px, L 25-37 tegen 58 vlak ernaast)
+                # lijkt op kleur nog op de sticker. Feit: de buitenste pixel die blijft staan is duidelijk donkerder
+                # (≥ 15 L) dan de sticker 3-6 px verder naar binnen aan dezelfde zijde -> ook weg (hooguit 5 px).
+                # Posities zoals de uitsnede ze straks heeft (afgerond, snede 1 px naar buiten).
+                for _ in range(5):
+                    k_ = int(round(o - os_))
+                    if nm == 'T':
+                        e0 = int(round(T - (o - 1))) + k_; edge_ = band(e0, e0 + 1, xs_.start, xs_.stop); in_ = band(e0 + 3, e0 + 6, xs_.start, xs_.stop)
+                    elif nm == 'B':
+                        e0 = int(round(B + (o - 1))) - 1 - k_; edge_ = band(e0, e0 + 1, xs_.start, xs_.stop); in_ = band(e0 - 5, e0 - 2, xs_.start, xs_.stop)
+                    elif nm == 'L':
+                        e0 = int(round(L - (o - 1))) + k_; edge_ = band(ys_.start, ys_.stop, e0, e0 + 1); in_ = band(ys_.start, ys_.stop, e0 + 3, e0 + 6)
+                    else:
+                        e0 = int(round(Rr + (o - 1))) - 1 - k_; edge_ = band(ys_.start, ys_.stop, e0, e0 + 1); in_ = band(ys_.start, ys_.stop, e0 - 5, e0 - 2)
+                    if len(edge_) and len(in_) and (np.median(in_[:, 0]) - np.median(edge_[:, 0])) * 100 / 255 >= 15:
+                        os_ -= 1
+                    else:
+                        break
                 side_in[nm] = int(round(o - os_))                  # zoveel pixels moet deze zijde verder naar binnen
         o -= 1                                                     # de randpixel is gemengd
         res.update(shape='rectangle with frame' if o > 2 * gap else 'rectangle', edge_from_shape_px=round(o, 1))

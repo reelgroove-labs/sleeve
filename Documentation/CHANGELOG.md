@@ -1,3 +1,7 @@
+# 0.5.44 — Sticker: no shadow line along the edge
+
+- **A thin dark line along one edge of a sticker is cut away.** The edge of the sticker can throw a shadow of a few pixels on the plastic sleeve (Queen For A Day 2021, bottom: 3 px at L 25–37 next to 58 on the sticker). Its colour was still close enough to the sticker to stay. Fact now: when the outermost pixel that would stay is clearly darker (15 L or more) than the sticker 3–6 px further in on the same side, it goes too (at most 5 px per side). Checked on 7 stickers: on three a dark edge line went, nothing of the print.
+
 # 0.5.43 — Fix for the vinyl tone option; night test all the same
 
 - **Fix: "Level the tone of plain light vinyl" could put random values in the picture.** The step that maps the measurement around the record back onto the flat picture (cv2.warpPolar, inverse) sometimes filled in garbage, on a CD reported as "90 L lighter". Sleeve now maps it back itself; the same picture gives the same result every time. Do not use the option in 0.5.42.
