@@ -68,8 +68,15 @@ def level(img, dpi):
     d = np.clip(target[None, :] - lp, 0, MAX_L)
     d[:, np.isnan(target)] = 0; d[~ok] = 0
     d = cv2.GaussianBlur(d.astype(np.float32), (0, 0), 1.0)
-    D = cv2.warpPolar(d, (sw, sh), c, Rp, cv2.WARP_POLAR_LINEAR | cv2.WARP_INVERSE_MAP) * (am & (r > INNER))
-    lpc = cv2.warpPolar(np.nan_to_num(lp, nan=99).astype(np.float32), (sw, sh), c, Rp, cv2.WARP_POLAR_LINEAR | cv2.WARP_INVERSE_MAP)
+    # terug naar het platte beeld met een eigen omrekening (cv2.warpPolar met WARP_INVERSE_MAP vulde soms willekeurige
+    # waarden in, 15 nov: 98 L op een cd); buiten de cirkel 0, rond doorlopend
+    ang = (np.arctan2(yy - c[1], xx - c[0]) % (2 * np.pi)) / (2 * np.pi) * NA
+    rad = np.hypot(xx - c[0], yy - c[1]) / Rp * PL.shape[1]
+    wrap = lambda a_: np.vstack([a_[-1:], a_, a_[:1]]).astype(np.float32)
+    back = lambda a_: cv2.remap(wrap(a_), rad.astype(np.float32), (ang + 1).astype(np.float32), cv2.INTER_LINEAR,
+                                borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    D = back(d) * (am & (r > INNER))
+    lpc = back(np.nan_to_num(lp, nan=99))
     if float(D[vin].max()) < .5:
         return img, {'levelled': False, 'plain': round(plain, 3), 'why': 'the vinyl tone is already even'}
     gain = 1 + D / np.maximum(lpc, 20)                     # zelfde factor voor B, G en R: alleen lichter, zelfde kleur

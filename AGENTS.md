@@ -1,6 +1,6 @@
 # Sleeve – overdracht voor de volgende agent (Codex of Claude)
 
-Stand: 14 nov 2026, versie 0.5.42 (branch `feiten`, github.com/reprise-labs/sleeve).
+Stand: 14 nov 2026, versie 0.5.43 (branch `feiten`, github.com/reprise-labs/sleeve).
 
 > **Werk altijd op branch `feiten`.** Niet op `release/0.4.12` of `backup-local-0.4.23`: dat is de oude route met regels.
 > Controleer bij de start: `git checkout feiten && git pull origin feiten`.
@@ -161,6 +161,10 @@ Extra feiten:
 ## 14 nov nacht (0.5.42): toon van effen licht vinyl
 - `scan_vlak.py` (optie `--level-vinyl`, app: toggle bij opnieuw verwerken van een plaatkant): poolcoördinaten, laagdoorlaat 0,5 mm × 1°, doel per straal = 90e percentiel rondom, alleen ophelderen (max 8 L), zelfde factor voor B/G/R; alleen effen (≥90% binnen ΔE 12) en licht (L ≥ 60) vinyl. Breder meten (6 mm of 3°) liet buren doorschieten en de randstrook half staan.
 - Let op: snelheid indelen gemeten met de juiste release 19274500: 68 → 33 s (eerder per ongeluk met de HNY-link).
+
+## 15 nov nacht (0.5.43)
+- `scan_vlak`: terugrekenen uit poolcoördinaten met eigen `cv2.remap` (warpPolar INVERSE gaf soms rommel). Toets optie op alle platen/cd's van de referentie: maat/oordeel gelijk, max 5,9 L. Script: scratchpad optietoets/run.py (niet in de repo).
+- Nachttoets 0.5.41: ALLES GELIJK (17 releases). queen_paars vastgelegd (niet goedgekeurd).
 
 ## Open
 - ~~Verkeerd gevouwen hoes melden~~: opgelost sinds 0.5.29 (smalle randen per stuk van een zijde bijsnijden); André 14 nov: "De back is perfect".
