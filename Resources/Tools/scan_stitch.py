@@ -713,6 +713,179 @@ def seam_level(img, masks, ks, best, height, width, px_mm, q=8, log=print):
     return True
 
 
+
+LOCAL_ALIGN = os.environ.get('SLEEVE_LOCAL_ALIGN', '1') == '1'   # 0.5.45: deelscans plaatselijk op elkaar laten vallen
+LOCAL_MIN_MM = 0.15     # kleinere verschillen laten we zoals ze zijn
+LOCAL_MAX_MM = 2.0      # meer is geen buiging van het papier maar een fout in de meting
+
+
+LOCAL_Q = 2             # velden op 1/2 schaal van het canvas
+
+
+def local_fields(warped, frames, order, px_mm, q=LOCAL_Q, log=print):
+    """Plaatselijke verschuiving per deelscan (canvas, 1/q schaal, in canvaspixels). De deelscans liggen als geheel op
+    elkaar (schuiven + draaien op de print in het midden). Een hoes ligt niet in elke scan even plat: aan de rand kan
+    dezelfde rand van het papier in twee scans tienden van millimeters verschillen (Queen 2021 back: 0,7 mm; waar de
+    scans wisselen, een trapje in de rand). Feit: in de overlap tonen beide scans hetzelfde papier; waar iets te zien
+    is (print, de rand) meet de optische stroom hoeveel de ene ten opzichte van de andere ligt. Elke scan schuift naar
+    het gemiddelde van de scans op die plek: bij twee scans de helft, bij drie of vier een derde of een kwart van elk
+    paarverschil (15 nov: altijd de helft schoof bij 3-4 scans 1,5-2 keer te ver; fake back: 0,07-0,34 mm over, nu
+    0,01-0,02 mm). Waar niets te meten is of het verschil klein is, blijft alles zoals het was."""
+    if len(order) < 2 or not px_mm:
+        return {}
+    Hc, Wc = frames[order[0]].shape[:2]
+    sw, sh = max(1, Wc // q), max(1, Hc // q)
+    pm = px_mm / q                                          # pixels per mm op deze schaal
+    er = np.ones((max(3, int(1.0 * pm)) | 1,) * 2, np.uint8)
+    g, m = {}, {}
+    for k in order:
+        w8 = np.clip(warped[k], 0, 255).astype(np.uint8)
+        g[k] = cv2.resize(cv2.cvtColor(w8, cv2.COLOR_BGR2GRAY), (sw, sh), interpolation=cv2.INTER_AREA)
+        m[k] = cv2.erode(cv2.resize(frames[k].astype(np.uint8), (sw, sh), interpolation=cv2.INTER_NEAREST), er) > 0
+    acc = {k: np.zeros((sh, sw, 2), np.float32) for k in order}
+    used = False
+    dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM); dis.setFinestScale(0); dis.setPatchStride(2)
+    sig = max(1.0, 2.0 * pm)
+    for i, a_ in enumerate(order):
+        for b_ in order[i + 1:]:
+            ov = m[a_] & m[b_]
+            if ov.sum() < (20 * pm) ** 2:
+                continue
+            ys, xs = np.where(ov); pad = int(5 * pm)
+            y0, y1 = max(0, ys.min() - pad), min(sh, ys.max() + pad + 1); x0, x1 = max(0, xs.min() - pad), min(sw, xs.max() + pad + 1)
+            ga, gb, o_ = np.ascontiguousarray(g[a_][y0:y1, x0:x1]), np.ascontiguousarray(g[b_][y0:y1, x0:x1]), ov[y0:y1, x0:x1]
+            F = dis.calc(ga, gb, None)                      # ga(x) ~ gb(x + F)
+            yy, xx = np.mgrid[0:y1 - y0, 0:x1 - x0].astype(np.float32)
+            gbw = cv2.remap(gb, xx + F[..., 0], yy + F[..., 1], cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+            err = cv2.GaussianBlur(np.abs(ga.astype(np.float32) - gbw.astype(np.float32)), (0, 0), 1.5)
+            gx = cv2.Sobel(ga, cv2.CV_32F, 1, 0, ksize=3); gy = cv2.Sobel(ga, cv2.CV_32F, 0, 1, ksize=3)
+            grad = cv2.GaussianBlur(np.hypot(gx, gy), (0, 0), 1.5)
+            mag = np.hypot(F[..., 0], F[..., 1])
+            # betrouwbaar: waar iets te zien is en de stroom de twee scans ook echt op elkaar legt (na verschuiven klein verschil)
+            conf = (o_ & (grad > 40) & (err < 25) & (mag < LOCAL_MAX_MM * pm)).astype(np.float32)
+            if conf.sum() < 200:
+                continue
+            wb = cv2.GaussianBlur(conf, (0, 0), sig)
+            Fs = cv2.GaussianBlur(F * conf[..., None], (0, 0), sig) / np.maximum(wb, 1e-6)[..., None]
+            t = np.clip(wb / 0.05, 0, 1) * cv2.GaussianBlur(o_.astype(np.float32), (0, 0), sig)
+            Fs *= t[..., None]
+            if float(np.percentile(np.hypot(Fs[..., 0], Fs[..., 1])[o_], 99)) < LOCAL_MIN_MM * pm:
+                continue
+            acc[a_][y0:y1, x0:x1] -= Fs / 2
+            acc[b_][y0:y1, x0:x1] += Fs / 2
+            used = True
+            log(f'NOTE: scans {a_ + 1} and {b_ + 1} laid on each other locally (up to {float(np.hypot(Fs[..., 0], Fs[..., 1]).max()) / pm:.2f} mm)')
+    if not used:
+        return {}
+    # gemiddelde over de scans op elke plek: som van de paarverschillen / aantal scans (zacht, zoals Fs)
+    ns = sum(cv2.GaussianBlur(m[k].astype(np.float32), (0, 0), sig) for k in order)
+    share = (2.0 / np.maximum(2.0, ns))[..., None]
+    for k in order:
+        acc[k] *= share
+    out = {}
+    for k in order:
+        d = acc[k]
+        if float(np.abs(d).max()) < .5 * LOCAL_MIN_MM * pm:
+            continue
+        out[k] = (d * q).astype(np.float32)                 # in canvaspixels
+    return out
+
+
+def apply_field(arr, d, q, interp):
+    """arr (canvas) opnieuw bemonsteren: nieuw(x) = oud(x + d(x)); d op 1/q schaal in canvaspixels."""
+    H_, W_ = arr.shape[:2]
+    D = cv2.resize(d, (W_, H_), interpolation=cv2.INTER_LINEAR)
+    yy, xx = np.mgrid[0:H_, 0:W_].astype(np.float32)
+    return cv2.remap(arr, (xx + D[..., 0]).astype(np.float32), (yy + D[..., 1]).astype(np.float32), interp, borderMode=cv2.BORDER_CONSTANT)
+
+
+TONE_INSET_MM = 2.5     # de grove toon wordt alleen gemeten op het onderdeel zelf, zo ver binnen de gevonden rand
+                        # (= de schaduwmaat van scan_feiten.trim_edge_lines; ±1 sigma van TONE_SIGMA)
+
+
+def tone_support(out, ox, oy, meta, part, fmt, px_mm, height, width, workbase):
+    """Feit: wat buiten de gevonden rand ligt haalt het eindresultaat nooit; de grove toon wordt daarom alleen op het
+    onderdeel zelf gemeten. Deksel, achtergrond en randschaduw verschillen per scan en lieten per scan een andere waas of
+    een trapje in de rand van het onderdeel komen (hoes, insert, plaat, cd).
+    De rand wordt gezocht met scan_feiten op de gewone menging (zelfde code en regels als de route erna); `out` is die
+    menging op de rekenschaal, bijgesneden op wat gescand is (ox, oy = de bijsnijding op het canvas).
+    Uitkomst (canvasschaal, één kaart): 0 buiten de gevonden rand, 0,5 op het onderdeel binnen TONE_INSET_MM van de rand,
+    1 op het onderdeel vanaf TONE_INSET_MM. Buiten de rand blijft de toon precies zoals voorheen: dat haalt het eindresultaat
+    nooit, maar de randzoeker in de route kijkt wel naar dat beeld (GF voorkant: een paar grijswaarden anders in de schaduw
+    buiten de rand verschoof een zwakke rand 2,2 mm). None als er geen rand gevonden is."""
+    import json, shutil, subprocess, tempfile
+    here = os.path.dirname(os.path.abspath(__file__))
+    d = tempfile.mkdtemp(prefix='toon_', dir=os.path.dirname(os.path.abspath(workbase)) or '.')
+    try:
+        img = os.path.join(d, 'mix.png'); crop = os.path.join(d, 'crop.png')
+        # de rand zoeken op de helft van de rekenschaal: 4x minder pixels, en de rand wordt toch 2,5 mm binnen gebruikt
+        half = cv2.resize(out, (max(1, out.shape[1] // 2), max(1, out.shape[0] // 2)), interpolation=cv2.INTER_AREA)
+        qx, qy = out.shape[1] / half.shape[1], out.shape[0] / half.shape[0]
+        meta = dict(meta, dpi=meta['dpi'] / 2, scans=[dict(sc, corners=[[x / qx, y / qy] for x, y in sc['corners']]) for sc in meta['scans']])
+        if not cv2.imwrite(img, half, [cv2.IMWRITE_PNG_COMPRESSION, 1]):
+            return None
+        json.dump(meta, open(img + '.scans.json', 'w'))
+        cmd = [sys.executable, os.path.join(here, 'scan_feiten.py'), img, part, '--out', crop] + (['--format', fmt] if fmt else [])
+        subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+        F = json.load(open(crop + '.feiten.json'))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    if F.get('verdict') not in ('GOED', 'TWIJFEL'):
+        return None
+    x_h, x_w = out.shape[:2]
+    O = np.zeros((height, width), np.uint8)
+    if F.get('cut_circle_px'):
+        cx, cy, r = F['cut_circle_px']; cx = cx * qx + ox; cy = cy * qy + oy; r *= (qx + qy) / 2     # terug naar de rekenschaal
+        cv2.circle(O, (int(round(cx)), int(round(cy))), int(round(r)), 1, -1)
+        ho = F.get('hole_offset_mm') or [0, 0]
+        hr = (F.get('hole_diameter_mm') or 7.24) / 2 + 0.9          # het middengat hoort niet bij het onderdeel
+        cv2.circle(O, (int(round(cx + ho[0] * px_mm)), int(round(cy + ho[1] * px_mm))), int(round(hr * px_mm)), 0, -1)
+    elif F.get('precise_mm') and 'angle' in F:
+        L, T, Wd, Hd = [v * px_mm for v in F['precise_mm']]
+        Rm = cv2.getRotationMatrix2D((x_w / 2, x_h / 2), F['angle'], 1.0); Ri = cv2.invertAffineTransform(Rm)
+        pts = np.float32([[L, T], [L + Wd, T], [L + Wd, T + Hd], [L, T + Hd]])
+        pts = (pts @ Ri[:, :2].T + Ri[:, 2] + np.float32([ox, oy])).astype(np.int32)
+        cv2.fillPoly(O, [pts], 1)
+    else:
+        return None
+    if not O.any():
+        return None
+    dist = cv2.distanceTransform(O, cv2.DIST_L2, 5) / px_mm
+    print(f'tone measured on the {part} only, {TONE_INSET_MM} mm inside the found edge (edge verdict {F["verdict"]})', flush=True)
+    return (0.5 * (dist > 0) + 0.5 * (dist >= TONE_INSET_MM)).astype(np.float32)
+
+
+def tone_blur(x, m, sup, sigma, blur):
+    """Grove toon van x (gewicht m). Met sup (steunkaart 0..1): alleen gemeten waar sup telt; waar er te weinig steun in
+    de buurt is (de scan ziet daar bijna niets van het onderdeel) terugval op alles wat de scan laat zien."""
+    def plain():
+        return blur(x * m[..., None], sigma) / np.maximum(blur(m, sigma), 1e-6)[..., None]
+    if sup is None:
+        return plain()
+    inside = np.clip(2 * sup, 0, 1); sup = np.clip(2 * sup - 1, 0, 1)      # kaart: 0 buiten, 0,5 binnen de inset, 1 daarbinnen
+    ak = m * sup; sa = blur(ak, sigma)
+    t = np.clip((sa - .02) / .08, 0, 1) * inside                            # buiten de rand: de gewone toon, zoals voorheen
+    rob = blur(x * ak[..., None], sigma) / np.maximum(sa, 1e-6)[..., None]
+    if (t[m > 0] >= 1).all():                   # overal genoeg steun (het midden van het onderdeel): de gewone toon is niet nodig
+        return rob
+    t = t[..., None]
+    return plain() * (1 - t) + rob * t
+
+
+def scans_meta(order, a_sizes, Tsh, H, O, a, f, ref_dpi, small=False):
+    """Waar elke scan in het (bijgesneden) uitvoerbeeld ligt: de .scans.json naast het resultaat (small: de kleine schaal)."""
+    klein = a.klein or small
+    outlines = []
+    for k in order:
+        hk, wk = int(a_sizes[k][1]), int(a_sizes[k][0])
+        cor = np.float32([[0, 0], [wk, 0], [wk, hk], [0, hk]]).reshape(-1, 1, 2)
+        cor = cv2.perspectiveTransform(cv2.perspectiveTransform(cor, Tsh @ H[k]), O).reshape(-1, 2)
+        outlines.append({'scan': os.path.basename(a.delen[k]), 'corners': (cor / (1 if (klein or f >= 1) else f)).round(1).tolist()})
+    return {'scale': 1 if (klein or f >= 1) else 1 / f, 'dpi': (ref_dpi or 0) * (f if (klein and f < 1) else 1), 'scans': outlines}
+
+
 def feather_weight(mask):
     """Gewicht dat vanaf de rand van het geldige deel zacht oploopt."""
     d = cv2.distanceTransform(mask.astype(np.uint8), cv2.DIST_L2, 5)
@@ -1088,7 +1261,7 @@ def flatten_paper(out, inside, sc=0.125):
     return g
 
 
-def render_full(paths, order, H, Tsh, O, f, out_small_wh, canvas_small, masks, wts, gainm, best, ks, flat, shape, source_scales=None, release_work=None, sources_ready=None, output_allocator=None,before_sources=None):
+def render_full(paths, order, H, Tsh, O, f, out_small_wh, canvas_small, masks, wts, gainm, best, ks, flat, shape, source_scales=None, release_work=None, sources_ready=None, output_allocator=None,before_sources=None,fields=None,support=None):
     """Het resultaat opnieuw opbouwen op volle scanresolutie, in blokken.
     Alles wat berekend is (uitlijning, kleurcorrectie, gewichten, welke scan
     per plek de details levert, vorm) komt van de kleine schaal; de pixels
@@ -1113,6 +1286,7 @@ def render_full(paths, order, H, Tsh, O, f, out_small_wh, canvas_small, masks, w
     gain=None
     gc.collect()
     B_o = to_out(best.astype(np.uint8), cv2.INTER_NEAREST)
+    Z_o = to_out(support.astype(np.float32), cv2.INTER_LINEAR) if support is not None else None
     F_o = to_out(flat.astype(np.float32), cv2.INTER_LINEAR) if flat is not None else None
     if release_work is not None:release_work()
     gc.collect()
@@ -1152,8 +1326,26 @@ def render_full(paths, order, H, Tsh, O, f, out_small_wh, canvas_small, masks, w
                     pk = polys[k] - [x0, y0]
                     if pk[:, 0].max() < 0 or pk[:, 1].max() < 0 or pk[:, 0].min() > w or pk[:, 1].min() > h:
                         continue
-                    fr = np.zeros((h, w), np.uint8)
-                    cv2.fillPoly(fr, [np.round(pk * 16).astype(np.int32)], 1, shift=4)
+                    moved = bool(fields) and k in fields
+                    if moved:
+                        # plaatselijke verschuiving (canvas, 1/LOCAL_Q schaal): uitvoerpunt p -> canvas c -> c + d -> p' -> bron
+                        yy_, xx_ = np.mgrid[0:h, 0:w].astype(np.float32); xx_ += x0; yy_ += y0
+                        cx_ = ((inverse_O[0, 0] * xx_ * f + inverse_O[0, 1] * yy_ * f + inverse_O[0, 2]) / LOCAL_Q).astype(np.float32)
+                        cy_ = ((inverse_O[1, 0] * xx_ * f + inverse_O[1, 1] * yy_ * f + inverse_O[1, 2]) / LOCAL_Q).astype(np.float32)
+                        dx_ = cv2.remap(fields[k][..., 0], cx_, cy_, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+                        dy_ = cv2.remap(fields[k][..., 1], cx_, cy_, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+                        px_ = xx_ + s * (O[0, 0] * dx_ + O[0, 1] * dy_); py_ = yy_ + s * (O[1, 0] * dx_ + O[1, 1] * dy_)
+                        Mi_ = np.linalg.inv(M[k])
+                        mx_ = (Mi_[0, 0] * px_ + Mi_[0, 1] * py_ + Mi_[0, 2]).astype(np.float32)
+                        my_ = (Mi_[1, 0] * px_ + Mi_[1, 1] * py_ + Mi_[1, 2]).astype(np.float32)
+                        hk, wk_ = srcs[k].shape[:2]; e_ = 6 / source_scales[k] if source_scales is not None else 6 * s
+                        # de omtrek van de scan verschuift mee: geldig is waar de verschoven plek in de scan ligt
+                        # (anders bleef aan een scanrand een reepje tot ±0,7 mm leeg)
+                        fr = ((mx_ >= e_) & (mx_ <= wk_ - e_) & (my_ >= e_) & (my_ <= hk - e_)).astype(np.uint8)
+                        xx_ = yy_ = cx_ = cy_ = dx_ = dy_ = px_ = py_ = None
+                    else:
+                        fr = np.zeros((h, w), np.uint8)
+                        cv2.fillPoly(fr, [np.round(pk * 16).astype(np.int32)], 1, shift=4)
                     if shape[0] == 'square':
                         mk = fr > 0
                     elif shape[0] == 'disc':
@@ -1163,8 +1355,12 @@ def render_full(paths, order, H, Tsh, O, f, out_small_wh, canvas_small, masks, w
                         mk = (fr > 0) & (sample(V_o[k], x0, y0, w, h, cv2.INTER_NEAREST) > 0)
                     if not mk.any():
                         continue
-                    im = cv2.warpAffine(srcs[k], (T @ M[k])[:2], (w, h), flags=cv2.INTER_LANCZOS4,
-                                        borderMode=cv2.BORDER_REPLICATE).astype(np.float32)
+                    if moved:
+                        im = cv2.remap(srcs[k], mx_, my_, cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REPLICATE).astype(np.float32)
+                        mx_ = my_ = None
+                    else:
+                        im = cv2.warpAffine(srcs[k], (T @ M[k])[:2], (w, h), flags=cv2.INTER_LANCZOS4,
+                                            borderMode=cv2.BORDER_REPLICATE).astype(np.float32)
                     if isinstance(G_o[k],tuple):
                         plane_k,field_k=G_o[k]
                         if plane_k is not None:im *= plane_k.output_block(inverse_O,f,x0,y0,w,h,out_small_wh)
@@ -1173,12 +1369,11 @@ def render_full(paths, order, H, Tsh, O, f, out_small_wh, canvas_small, masks, w
                         im *= G_o[k].output_block(inverse_O,f,x0,y0,w,h,out_small_wh) if isinstance(G_o[k],GainPlane) else sample(G_o[k], x0, y0, w, h, cv2.INTER_LINEAR)
                     mf = mk.astype(np.float32)
                     wk = (np.maximum(sample(W_o[k], x0, y0, w, h, cv2.INTER_LINEAR), 0) + 1e-4) * mf
-                    mb = detail_blur(mf, sig)
-                    lk = detail_blur(im * mf[..., None], sig) / np.maximum(mb, 1e-6)[..., None]
-                    low += lk * wk[..., None]; acc += wk
                     winner = (bt == n) & mk
-                    if winner.any():
-                        win = cv2.GaussianBlur(winner.astype(np.float32), (0, 0), 2 * s)
+                    lk = tone_blur(im, mf, None if Z_o is None else np.clip(sample(Z_o, x0, y0, w, h, cv2.INTER_LINEAR), 0, 1), sig, detail_blur)
+                    win = cv2.GaussianBlur(winner.astype(np.float32), (0, 0), 2 * s) if winner.any() else None
+                    low += lk * wk[..., None]; acc += wk
+                    if win is not None:
                         high += (im - lk) * win[..., None]
                     anym |= mk
                 res = low / np.maximum(acc, 1e-6)[..., None] + high
@@ -1290,6 +1485,8 @@ def main_with_resources(resources,lease=None):
     p.add_argument('--snelle-tussenbestanden',action='store_true',help=argparse.SUPPRESS)
     p.add_argument('--referentie', type=int)
     p.add_argument('--plaat-onderdeel', action='store_true', help=argparse.SUPPRESS)   # feitenroute: dit is een plaat (glans is hier geen schaduw)
+    p.add_argument('--toon-onderdeel', default=None, help=argparse.SUPPRESS)   # feitenroute: welk onderdeel dit is (voor het zoeken van de rand van de toon)
+    p.add_argument('--toon-format', default=None, help=argparse.SUPPRESS)
     p.add_argument('--klein', action='store_true', help='output at ~300 dpi (fast) instead of full scan resolution')
     p.add_argument('--vorm', choices=['auto', 'hoes', 'plaat', 'geen', 'ruw'], default='auto', help='hoes = square, plaat = round, geen = by color only, ruw = whole scans, no cropping (default: decide automatically)')
     a = p.parse_args()
@@ -1404,6 +1601,14 @@ def main_with_resources(resources,lease=None):
         fr = np.zeros(imgs[k].shape[:2], np.uint8); fr[6:-6, 6:-6] = 1
         frames[k] = cv2.warpAffine(fr, M, size, flags=cv2.INTER_NEAREST) > 0
 
+    fields = {}; support = None
+    if LOCAL_ALIGN and a.vorm == 'ruw' and not a.plaat_onderdeel and len(order) > 1:
+        progress('Laying partial scans on each other locally')
+        fields = local_fields(warped, frames, order, px_mm, log=lambda t: print(t, flush=True))
+        for k, d in fields.items():
+            warped[k] = apply_field(warped[k], d, LOCAL_Q, cv2.INTER_LINEAR)
+            frames[k] = apply_field(frames[k].astype(np.uint8), d, LOCAL_Q, cv2.INTER_NEAREST) > 0
+            masks[k] = apply_field(masks[k].astype(np.uint8), d, LOCAL_Q, cv2.INTER_NEAREST) > 0
     a_sizes = {k: (imgs[k].shape[1], imgs[k].shape[0]) for k in order}
     imgs=valid=feats=None
     gc.collect()
@@ -1625,31 +1830,62 @@ def main_with_resources(resources,lease=None):
         quality=stitch_quality(img,masks,ks,best,height,width,1.0/f)
         print('SLEEVE_QUALITY '+__import__('json').dumps(quality),flush=True)
     value=coherent=share=better=None
-    def lowpass(x,m):
-        mb=cv2.GaussianBlur(m,(0,0),TONE_SIGMA)
-        return cv2.GaussianBlur(x*m[...,None],(0,0),TONE_SIGMA)/np.maximum(mb,1e-6)[...,None]
     # Accumulate one band across all sources, then write the byte output directly.
     # Per-pixel source order and float32 arithmetic match the mapped-buffer path.
     pad=int(4*TONE_SIGMA)+2
-    out=np.zeros((height,width,4),np.uint8);anymask=np.zeros((height,width),bool)
-    progress('Finishing transitions between partial scans',0,len(ks)*height)
-    for y0 in range(0,height,256):
-        y1=min(height,y0+256);top=max(0,y0-pad);bottom=min(height,y1+pad)
-        low=np.zeros((y1-y0,width,3),np.float32);high=np.zeros_like(low)
-        for n,k in enumerate(ks):
-            mk=masks[k][top:bottom].astype(np.float32)
-            lk=lowpass(img[k][top:bottom],mk)[y0-top:y1-top]
-            low+=lk*wts[k][y0:y1,...,None]
-            win=cv2.GaussianBlur(((best[top:bottom]==n)&masks[k][top:bottom]).astype(np.float32),(0,0),2)[y0-top:y1-top]
-            high+=(img[k][y0:y1]-lk)*win[...,None]
+    gauss=lambda v,sg:cv2.GaussianBlur(v,(0,0),sg)
+    def gauss_fast(v,sg,q=4):
+        # de grove toon is zo glad dat een kwart van de resolutie genoeg is (alleen waar het beeld niet het eindresultaat is)
+        h_,w_=v.shape[:2]
+        if min(h_,w_)<8*q:return cv2.GaussianBlur(v,(0,0),sg)
+        sm=cv2.resize(v,(w_//q,h_//q),interpolation=cv2.INTER_AREA)
+        return cv2.resize(cv2.GaussianBlur(sm,(0,0),sg/q),(w_,h_),interpolation=cv2.INTER_LINEAR)
+    def mix_small(sup,label,fast=False):
+        blur=gauss_fast if fast else gauss
+        out=np.zeros((height,width,4),np.uint8);anymask=np.zeros((height,width),bool);wsum={}
+        progress(label,0,len(ks)*height)
+        for y0 in range(0,height,256):
+            y1=min(height,y0+256);top=max(0,y0-pad);bottom=min(height,y1+pad)
+            low=np.zeros((y1-y0,width,3),np.float32);high=np.zeros_like(low)
+            for n,k in enumerate(ks):
+                mk=masks[k][top:bottom].astype(np.float32)
+                lk=tone_blur(img[k][top:bottom],mk,None if sup is None else sup[top:bottom],TONE_SIGMA,blur)[y0-top:y1-top]
+                win=cv2.GaussianBlur(((best[top:bottom]==n)&masks[k][top:bottom]).astype(np.float32),(0,0),2)[y0-top:y1-top]
+                wk=wts[k][y0:y1]
+                low+=lk*wk[...,None];wsum[n]=wk
+                high+=(img[k][y0:y1]-lk)*win[...,None]
+                work.drop_pages()
+            acc=sum(wsum.values());wsum.clear()
+            res=low/np.maximum(acc,1e-6)[...,None]+high
+            out[y0:y1,:,:3]=np.clip(res+.5,0,255).astype(np.uint8)
+            for k in ks:anymask[y0:y1]|=masks[k][y0:y1]
+            out[y0:y1,:,3]=np.where(anymask[y0:y1],255,0)
             work.drop_pages()
-        acc=sum(wts[k][y0:y1] for k in ks)
-        res=low/np.maximum(acc,1e-6)[...,None]+high
-        out[y0:y1,:,:3]=np.clip(res+.5,0,255).astype(np.uint8)
-        for k in ks:anymask[y0:y1]|=masks[k][y0:y1]
-        out[y0:y1,:,3]=np.where(anymask[y0:y1],255,0)
-        work.drop_pages()
-        progress('Finishing transitions between partial scans',len(ks)*y1,len(ks)*height)
+            progress(label,len(ks)*y1,len(ks)*height)
+        return out,anymask
+    out=anymask=None
+    if a.toon_onderdeel and a.vorm=='ruw' and len(ks)>1 and px_mm:
+        # feit: de grove toon alleen op het onderdeel zelf (zie tone_support); eerst de gewone menging voor het zoeken van de rand
+        import time as _t; t_0=_t.time()
+        progress('Finding the edge for the tone')
+        out0,am0=mix_small(None,'Finding the edge for the tone',fast=True)
+        t_1=_t.time()
+        ys0,xs0=np.where(am0)
+        if ys0.size:
+            ox0,oy0=int(xs0.min()),int(ys0.min())
+            O0=np.array([[1,0,-ox0],[0,1,-oy0],[0,0,1]],float)
+            support=tone_support(out0[ys0.min():ys0.max()+1,xs0.min():xs0.max()+1],ox0,oy0,
+                                 scans_meta(order,a_sizes,Tsh,H,O0,a,f,ref_dpi,small=True),a.toon_onderdeel,a.toon_format,px_mm,height,width,a.uitvoer)
+        out0=am0=None
+        print(f'tone: plain mix {t_1-t_0:.0f}s, edge search {_t.time()-t_1:.0f}s',flush=True)
+        if support is None:print('tone: no edge found for the '+a.toon_onderdeel+'; measured over everything each scan sees',flush=True)
+    if f<1 and not a.klein and a.vorm=='ruw':
+        # bij volle resolutie vervangt render_full dit kleine beeld; alleen de dekking (bijsnijden en maat) blijft nodig: niet mengen
+        anymask=np.zeros((height,width),bool)
+        for k in ks:anymask|=masks[k]
+        out=np.zeros((height,width,4),np.uint8);out[...,3]=np.where(anymask,255,0)
+    else:
+        out,anymask=mix_small(support,'Finishing transitions between partial scans')
     imgs=valid=feats=warped=frames=img=low=high=score=res=acc=g=sh=mk=lk=win=None
     work.keep_only({('weight',k) for k in ks}|{('gain',k) for k in ks})
     gc.collect()
@@ -1673,13 +1909,7 @@ def main_with_resources(resources,lease=None):
     O = np.array([[1, 0, -xs.min()], [0, 1, -ys.min()], [0, 0, 1]], float) @ O
     if a.vorm == 'ruw':
         import json
-        outlines = []
-        for k in order:
-            hk, wk = int(a_sizes[k][1]), int(a_sizes[k][0])
-            cor = np.float32([[0, 0], [wk, 0], [wk, hk], [0, hk]]).reshape(-1, 1, 2)
-            cor = cv2.perspectiveTransform(cv2.perspectiveTransform(cor, Tsh @ H[k]), O).reshape(-1, 2)
-            outlines.append({'scan': os.path.basename(a.delen[k]), 'corners': (cor / (1 if (a.klein or f >= 1) else f)).round(1).tolist()})
-        json.dump({'scale': 1 if (a.klein or f >= 1) else 1 / f, 'dpi': (ref_dpi or 0) * (f if (a.klein and f < 1) else 1), 'scans': outlines}, open(a.uitvoer + '.scans.json', 'w'), indent=1)
+        json.dump(scans_meta(order, a_sizes, Tsh, H, O, a, f, ref_dpi), open(a.uitvoer + '.scans.json', 'w'), indent=1)
     if f < 1 and not a.klein:
         shape = ('square', None) if square is not None else (('disc', disc_c) if disc_c is not None else (None, None))
         out_wh=(out.shape[1],out.shape[0])
@@ -1698,7 +1928,7 @@ def main_with_resources(resources,lease=None):
             work.keep_only(set())
             if lease is not None:lease.resize(field_units)
         out = render_full(a.delen, order, H, Tsh, O, f, out_wh, size,
-                          masks, wts, gainm, best, ks, flat, shape, source_scales, release_work=release_preparation,sources_ready=lambda:lease.resize(min(lease.weight,12+max(0,len(ks)-4))) if lease is not None else None,output_allocator=lambda shape:work.empty(('full-output',0),shape,np.uint8),before_sources=lambda:lease.grow(decoder_units,phase='Opening original scans') if lease is not None else None)
+                          masks, wts, gainm, best, ks, flat, shape, source_scales, release_work=release_preparation,sources_ready=lambda:lease.resize(min(lease.weight,12+max(0,len(ks)-4))) if lease is not None else None,output_allocator=lambda shape:work.empty(('full-output',0),shape,np.uint8),before_sources=lambda:lease.grow(decoder_units,phase='Opening original scans') if lease is not None else None,fields=fields,support=support)
         masks=wts=gainm=best=flat=None
         gc.collect()
     # Full source maps and tile buffers have gone. Flushed output bytes can wait

@@ -1,6 +1,6 @@
 # Sleeve – overdracht voor de volgende agent (Codex of Claude)
 
-Stand: 14 nov 2026, versie 0.5.44 (branch `feiten`, github.com/reprise-labs/sleeve).
+Stand: 16 nov 2026, versie 0.5.45 (branch `feiten`, github.com/reprise-labs/sleeve).
 
 > **Werk altijd op branch `feiten`.** Niet op `release/0.4.12` of `backup-local-0.4.23`: dat is de oude route met regels.
 > Controleer bij de start: `git checkout feiten && git pull origin feiten`.
@@ -165,6 +165,15 @@ Extra feiten:
 ## 15 nov nacht (0.5.43)
 - `scan_vlak`: terugrekenen uit poolcoördinaten met eigen `cv2.remap` (warpPolar INVERSE gaf soms rommel). Toets optie op alle platen/cd's van de referentie: maat/oordeel gelijk, max 5,9 L. Script: scratchpad optietoets/run.py (niet in de repo).
 - Nachttoets 0.5.41: ALLES GELIJK (17 releases). queen_paars vastgelegd (niet goedgekeurd).
+
+## 15-16 nov nacht (0.5.45): toon alleen op het onderdeel, plaatselijk bijschuiven, volgorde per naam
+- **Feit (alle soorten):** wat buiten de gevonden rand ligt haalt het eindresultaat nooit; de grove toon (`TONE_SIGMA` 30 px ≈ 2,5 mm) wordt alleen gemeten vanaf `TONE_INSET_MM` = 2,5 mm binnen de rand. `scan_stitch.tone_support` zoekt de rand met `scan_feiten.py` op een gewone menging (op half formaat), kaart 0 buiten / 0,5 binnen de inset / 1 daarbinnen; `tone_blur` gebruikt buiten de rand de oude toon (de route zoekt daarna weer een rand op dat beeld: een andere toon buiten de rand verschoof bij GF de zwakke linkerrand 2,2 mm). Klein pad én `render_full`. Route geeft `--toon-onderdeel/--toon-format` door; `SLEEVE_TONE=0` zet het uit. De oude randstrook (`edge_zone`) is weg.
+- `local_fields`: deelscans plaatselijk op elkaar (optische stroom, gemiddelde van de scans op die plek). `SLEEVE_LOCAL_ALIGN=0` zet het uit.
+- `scan_vakken.set_order`: een teller per naam of een doorlopende teller; `Tests/check_scan_order.py`.
+- Snel: bij volle resolutie geen kleine toonmenging meer (alleen de dekking); `reference.py` toetst een andere versie met `SLEEVE_REFERENCE_ROOT`.
+- **Les (vannacht):** de gecommitte 0.5.44 geeft op deena exact de vastlegging; zonder de toonregel maakten de andere wijzigingen de deena-back TWIJFEL (312,5). De regel hoort dus bij de rest.
+- **Bekend:** GF-voorkant, zwakke linkerrand (zilver op wit deksel): met de regel ±1 mm ruimer, back TWIJFEL. André scant opnieuw met een donker vel erachter.
+- Vaste toets niet opnieuw vastgelegd (maten tot 1,6 mm anders; niet door André goedgekeurd). Toetsen draaien met `reference.py run <namen> --no-cache`; eerst `Tests/feiten/indeling.py`.
 
 ## Open
 - ~~Verkeerd gevouwen hoes melden~~: opgelost sinds 0.5.29 (smalle randen per stuk van een zijde bijsnijden); André 14 nov: "De back is perfect".

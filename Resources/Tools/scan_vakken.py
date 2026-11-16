@@ -49,7 +49,9 @@ SIDES = ['sidea', 'sideb', 'sidec', 'sided']
 
 def thumb(path, work):
     """Kleine versie via ImageIO (snel, ook bij grote png's); geeft beeld en schaal t.o.v. het origineel."""
-    out = os.path.join(work, os.path.basename(path) + '.jpg')
+    # de hele map telt mee: twee scans met dezelfde naam uit verschillende mappen mogen elkaars miniatuur niet lezen
+    import hashlib
+    out = os.path.join(work, hashlib.sha1(os.path.abspath(path).encode()).hexdigest()[:10] + '_' + os.path.basename(path) + '.jpg')
     subprocess.run(['/usr/bin/sips', '-Z', str(THUMB), '-s', 'format', 'jpeg', path, '--out', out], capture_output=True)
     im = cv2.imread(out)
     if im is None:
@@ -96,24 +98,40 @@ def has_cd(im, px_mm):
     return False
 
 
-def number_key(path):
-    """Bestandsvolgorde zoals de scanner nummert en de Finder sorteert: 'Scan' voor 'Scan 1' voor 'Scan 2'
-    voor 'Scan 10' ('00.jpeg' is de eerste, daarna '00 1.jpeg'; voorheen kwam '00.jpeg' als laatste)."""
+NAME_ORDER = False      # main(): True als de getallen in de namen geen doorlopende teller zijn
+
+
+def natural(path):
+    """Natuurlijke naamvolgorde zoals de Finder: 'Scan' voor 'Scan 1' voor 'Scan 2' voor 'Scan 10'."""
     stem = os.path.splitext(os.path.basename(path))[0]
-    # Feit: de scanner nummert elke scan; dat volgnummer is het laatste getal in de naam (Scan 12, 00 12,
-    # IMG_20261112_0012, queen_sidea_label_20261114_0018). Een eigen woord in de naam (sidea_label) verandert
-    # de volgorde niet: die labelscan hoort tussen 0017 en 0019 (Queen, 14 nov).
-    nums = re.findall(r'\d+', stem)
-    seq = int(nums[-1]) if nums else 0
-    m = re.match(r'^(.*\S)\s+(\d+)$', stem)
-    if m:                                                  # 'Scan 12' / '00 12'
-        seq = int(m.group(2)); base = m.group(1)
-    elif re.fullmatch(r'\D*', stem):                       # 'Scan' / '00' zonder volgnummer: de eerste
-        seq = 0; base = stem
-    else:
-        base = stem
-    nat = [(0, int(x)) if x.isdigit() else (1, x.lower()) for x in re.split(r'(\d+)', base) if x]
-    return (seq, nat)
+    return [(0, int(x)) if x.isdigit() else (1, x.lower()) for x in re.split(r'(\d+)', stem) if x]
+
+
+def numbers(path):
+    """Alle getallen in de naam, van links naar rechts: datum, tijd en volgnummer van de scanner
+    (IMG_20261112_0012 -> 20261112, 12; 'Scan 2026-11-14 at 10.32.05' -> 2026, 11, 14, 10, 32, 5; 'Scan' -> geen)."""
+    return tuple(int(x) for x in re.findall(r'\d+', os.path.splitext(os.path.basename(path))[0]))
+
+
+def set_order(scans):
+    """Feit: een doorlopende teller (de scanner nummert elke scan) loopt door, ook als jij tussendoor een andere naam
+    geeft (queen_..._0017, queen_sidea_label_..._0018, queen_..._0019). Tellen twee reeksen met een eigen naam elk
+    opnieuw over dezelfde getallen (us_white_sidea_20261114_0001 .. 0004, us_white_sideb_20261114_0001 .. 0004),
+    dan is er per naam een teller en is de naam de volgorde. Voorheen telde alleen het laatste getal: alle 0001's
+    eerst, de onderdelen door elkaar (us_new_white_back3, 15 nov)."""
+    global NAME_ORDER
+    series = {}
+    for s in scans:
+        series.setdefault(re.sub(r'\d+', '#', os.path.splitext(os.path.basename(s))[0].lower()), []).append(numbers(s))
+    spans = sorted((min(v), max(v)) for v in series.values() if len(v) >= 2)
+    NAME_ORDER = any(b[0] <= a[1] for a, b in zip(spans, spans[1:]))
+
+
+def number_key(path):
+    """Scanvolgorde. Doorlopende teller: alle getallen in de naam, van links naar rechts (zo ook over twee dagen
+    heen, en een eigen woord in de naam verandert niets: queen_sidea_label_20261114_0018 hoort tussen 0017 en 0019).
+    Een teller per naam (set_order): de naam, in natuurlijke volgorde."""
+    return (natural(path),) if NAME_ORDER else (numbers(path), natural(path))
 
 
 def small(path, work):
@@ -322,6 +340,7 @@ def stacks(scans, feats, discs):
 def main():
     url, fmt, slots = sys.argv[1], sys.argv[2], [s for s in sys.argv[3].split(',') if s]
     scans = sys.argv[4:]
+    set_order(scans)
     codes, imgs, roles = [], [], []
     if url:
         rid = re.search(r'/release/(\d+)', url); mid = re.search(r'/master/(\d+)', url)

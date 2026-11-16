@@ -324,7 +324,7 @@ def side_letter(text):
     return None
 
 
-STITCH_FILES = ('scan_stitch.py', 'scan_blend.py', 'scan_fields.py', 'scan_memory.py', 'scan_progress.py', 'scan_dpi.py', 'scan_edges.py', 'scan_cutout.py')
+STITCH_FILES = ('scan_stitch.py', 'scan_blend.py', 'scan_fields.py', 'scan_memory.py', 'scan_progress.py', 'scan_dpi.py', 'scan_edges.py', 'scan_cutout.py', 'scan_feiten.py')
 
 
 def stitch_key(scans, halved, disc):
@@ -337,7 +337,8 @@ def stitch_key(scans, halved, disc):
             h.update(open(p, 'rb').read())
     for s in sorted(scans):
         st = os.stat(s); h.update(f'{os.path.abspath(s)}|{st.st_size}|{int(st.st_mtime)}'.encode())
-    h.update(f'{halved}|{disc}|{os.environ.get("SLEEVE_SEAM_LEVEL", "")}'.encode())
+    env = '|'.join(os.environ.get(v, '') for v in ('SLEEVE_SEAM_LEVEL', 'SLEEVE_LOCAL_ALIGN', 'SLEEVE_TONE_KEY'))
+    h.update(f'{halved}|{disc}|{env}'.encode())
     return h.hexdigest()
 
 
@@ -571,7 +572,7 @@ def main():
         if not dpi0:
             result['why'].append('the scan has no resolution (dpi) stored; 300 dpi assumed for the size facts')
     else:
-        scans_in = a.scans
+        scans_in = a.scans; halves = []
         import scan_dpi
         d0 = scan_resolution(a.scans[0], a.release_dpi)
         from PIL import Image as _PI
@@ -589,11 +590,16 @@ def main():
             for i, f in enumerate(a.scans):
                 q = os.path.join(a.work, f'half_{i}_' + os.path.splitext(os.path.basename(f))[0] + '.png')
                 with Image.open(f) as im:
-                    im.reduce(2).save(q, dpi=(d0 / 2, d0 / 2))
-                scans_in.append(q)
-            result['why_note'] = f'{len(a.scans)} scans ({total_px / 1e6:.0f} Mpx) do not fit in memory together; made at {d0 / 2:.0f} dpi'
+                    # zonder resolutie in het bestand geen 0 dpi schrijven: dan zoekt scan_stitch het zelf uit
+                    im.reduce(2).save(q, **({'dpi': (d0 / 2, d0 / 2)} if d0 else {}))
+                scans_in.append(q); halves.append(q)
+            result['why_note'] = (f'{len(a.scans)} scans ({total_px / 1e6:.0f} Mpx) do not fit in memory together; made at half resolution'
+                                  + (f' ({d0 / 2:.0f} dpi)' if d0 else ''))
         step(f'merging {len(scans_in)} scans')
         is_disc = SF.SHAPES.get(fmt, SF.SHAPES['vinyl']).get(feit_part, ('rect',))[0] == 'disc'
+        tone_on = os.environ.get('SLEEVE_TONE', '1') != '0'                 # 0 = uit (voor vergelijken)
+        os.environ['SLEEVE_TONE_KEY'] = f'{feit_part}|{fmt}' if tone_on else 'off'   # het onderdeel hoort bij de sleutel van de tussenopslag
+        tone_args = ['--toon-onderdeel', feit_part, '--toon-format', fmt] if tone_on else []    # feit: de grove toon alleen op het onderdeel zelf (scan_stitch.tone_support)
         if is_disc:
             # Optie A (doorschijnend vinyl): per positie een scan met de witte klep (de echte kleur) en een met een vel op
             # de plaat (daar is de rand te zien). Feit per scan: de achtergrond langs de scanrand, wit of gekleurd.
@@ -617,7 +623,7 @@ def main():
         if cached is not None:
             st = cached                                     # alleen in de vaste toets (SLEEVE_STITCH_CACHE)
         else:
-            st = subprocess.run([PY, os.path.join(HERE, 'scan_stitch.py'), raw] + scans_in + ['--vorm', 'ruw'] + (['--plaat-onderdeel'] if is_disc else []), capture_output=True, text=True)
+            st = subprocess.run([PY, os.path.join(HERE, 'scan_stitch.py'), raw] + scans_in + ['--vorm', 'ruw'] + (['--plaat-onderdeel'] if is_disc else []) + tone_args, capture_output=True, text=True)
             if st.returncode == 0 and edge_circle is None:
                 stitch_cache_put(a.scans, scans_in != a.scans, is_disc, raw, st.stdout)
         if edge_circle is not None and st.returncode == 0:
@@ -632,7 +638,7 @@ def main():
             # gewone versie gezocht (gelijktrekken verschoof eerder de gevonden rand: Queen-insert 1,2 mm); alleen
             # de pixels komen uit deze versie, als die precies op hetzelfde canvas ligt.
             step('merging again with the tone levelled across the seams')
-            lv = subprocess.run([PY, os.path.join(HERE, 'scan_stitch.py'), level_raw] + scans_in + ['--vorm', 'ruw'] + (['--plaat-onderdeel'] if is_disc else []),
+            lv = subprocess.run([PY, os.path.join(HERE, 'scan_stitch.py'), level_raw] + scans_in + ['--vorm', 'ruw'] + (['--plaat-onderdeel'] if is_disc else []) + tone_args,
                                 capture_output=True, text=True, env=dict(os.environ, SLEEVE_SEAM_LEVEL='1'))
             try:
                 same = lv.returncode == 0 and json.load(open(raw + '.scans.json'))['scans'] == json.load(open(level_raw + '.scans.json'))['scans']
@@ -642,8 +648,8 @@ def main():
                 levelled = True
             else:
                 result['why'].append('the tone could not be levelled across the seams (the second merge did not line up exactly); made without it')
-        for q in scans_in:
-            if q not in a.scans and os.path.exists(q):
+        for q in halves:                                   # ook de vel-kopieën (optie A gebruikt daarna alleen de klep-scans)
+            if os.path.exists(q):
                 os.remove(q)
     # Wat het samenvoegen over losse deelscans meldt, hoort de gebruiker te weten (nooit stil weglaten).
     for line in (st.stdout or '').splitlines():

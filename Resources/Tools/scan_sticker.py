@@ -168,7 +168,8 @@ def main():
         crop[sy0 - y0:sy0 - y0 + sub.shape[0], sx0 - x0:sx0 - x0 + sub.shape[1], :3] = sub
         yy, xx = np.mgrid[0:n, 0:n]; d = np.hypot(xx - (cx - x0), yy - (cy - y0))
         crop[:, :, 3] = (np.clip(r - .7 - d + .5, 0, 1) * 255).astype(np.uint8)   # net binnen de rand, zachte rand van één pixel
-        res.update(shape='circle', rim_seen=round(rim, 2), area_frac=round(math.pi * r * r / (W * H), 4))
+        # een cirkel staat niet scheef: draaien is hier niets (zelfde velden als bij een rechthoek)
+        res.update(shape='circle', angle=0.0, rim_seen=round(rim, 2), area_frac=round(math.pi * r * r / (W * H), 4))
         if rim < .75:
             res['verdict'] = 'TWIJFEL'; res['why'].append(f'the round edge is visible on only {100 * rim:.0f}% of the circle')
     else:
@@ -238,8 +239,11 @@ def main():
         cf = (np.c_[cont.reshape(-1, 2) / s, np.ones(len(cont))] @ R.T) - [max(0, int(round(T))), max(0, int(round(L)))][::-1]
         m4 = np.zeros((ch * 4, cw * 4), np.uint8)
         cv2.fillPoly(m4, [np.round(cv2.convexHull(cf.astype(np.float32)).reshape(-1, 2) * 4).astype(np.int32)], 255)
-        if o > 0:
-            rr = int(round(o * 4)); m4 = cv2.dilate(m4, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * rr + 1, 2 * rr + 1)))
+        if abs(o) >= .25:
+            # o > 0: de sticker is rondom groter dan zijn kader; o < 0: de rand ligt binnen het kader, dan krimpt de
+            # vorm mee (anders bleven de hoeken van het kader staan in plaats van ronde hoeken)
+            rr = int(round(abs(o) * 4)); se_ = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * rr + 1, 2 * rr + 1))
+            m4 = cv2.dilate(m4, se_) if o > 0 else cv2.erode(m4, se_)
         mask = cv2.resize(m4, (cw, ch), interpolation=cv2.INTER_AREA)
         # Hoeken op kleur: de hoek van de sticker kan ronder zijn dan zijn kader. In elk hoekvak wordt wat de kleur
         # van de achtergrond heeft (gemeten net buiten de rechte zijden) en aan de buitenhoek vastzit, transparant.
