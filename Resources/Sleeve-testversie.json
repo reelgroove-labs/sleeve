@@ -1,20 +1,20 @@
 {
-  "test_build_date": "2026-11-25",
-  "type": "local test build; no release/tag",
+  "test_build_date": "2026-11-26",
+  "type": "release 0.5.46",
   "source_sha256": {
-    "studio_bridge.py": "9287c218faa767263098f1c23ea73a077c7d768110445cba1901b2df18b12a75",
+    "studio_bridge.py": "6caacae677b4c99e101b740e744266b9ba95a2811ec6c33f3effbaa2a87efe63",
     "Tools/scan_blend.py": "bef2426ba93ef2034753a4b8d4422855398edc182c600c779ec09fc2ee6a5832",
-    "Tools/scan_colour.py": "918b87d3fff34b912d42136e2179acc5ed25ebe5d38879fdfb6fbfca17f51ebe",
+    "Tools/scan_colour.py": "9375cafd39f7eaaf199d09badfffae0e33b64ec6073bca79da7a1c47ff7df35b",
     "Tools/scan_cutout.py": "5a9b6af6722b3f705255dba6f1edac3d6189c1180fb0d2856698d94981b34e05",
     "Tools/scan_discogs.py": "218e436cca98a32d574aafe9f54fc061a8d2a51846a1615639a3c0077e5dc7f0",
     "Tools/scan_dpi.py": "932001be6694abd81338ae63eb7db164de837b035bb4de4fa49753994452468e",
     "Tools/scan_edges.py": "fc7273d1c0f41ed903e15795e69502b6047ba3ba782408efa7ce326bfbe7f9da",
-    "Tools/scan_feiten.py": "4195e1ae3c45749f9e1141a6f9504f609a0244e7329c38e685d9e5aff4bbc3d4",
-    "Tools/scan_feitenroute.py": "6ebefb724c73d67da7956a169f32783b63dee2d01697246abd720cb7b4660ac9",
+    "Tools/scan_feiten.py": "85622d048c2c6adce7cd82d4b192f8a8f249ae94237d35ea7f0fb0517df769f4",
+    "Tools/scan_feitenroute.py": "3dc4779c037840c80eeddfc8c79eff949adad84cc47fa69469b997c9d42c5ef4",
     "Tools/scan_fields.py": "c1a59dc5f38ef1bbbf48d134b2a2b269ce22ade0e9ad8b0becdeb498636af36b",
     "Tools/scan_final_check.py": "42e8d985c4215ad876b75d059e386af388413979461c6b6ac9515a8f40e837c2",
-    "Tools/scan_kleur_kanten.py": "a8065992824f0cf59635cf4a84b823bd3c22df58e2b180b05b24d9e8007c0a8e",
-    "Tools/scan_label.py": "7c17265fb21e12f9fd520f3ea1796b52bae8f2195c684071a8e945b3290429cf",
+    "Tools/scan_kleur_kanten.py": "38ae616239b35e7a888f0bfa3abd5acd9d1804a9075cf2ce11e922862c728964",
+    "Tools/scan_label.py": "beb85c293ed95e7742545b7409eeb4abe4f5a4e8e3199587ce4ac8e0f85eb4d4",
     "Tools/scan_lichtkolom.py": "9efa36cf231786e48b2dbda7c3dbaa8fe6828dabcee3d2dcc218f98a15231a7c",
     "Tools/scan_line_source.py": "4980df226085aa1b6e29710cb124e0a2b13fe3d838e2d8b2a15315241bab2ba8",
     "Tools/scan_memory.py": "9dc1b55b3a16a700569e2b8843a3c31edffb65c7181e1ceffef406db5cae7041",
@@ -23,7 +23,7 @@
     "Tools/scan_paper_light.py": "605f1d8fd2a2bb22c6d8c61bf5d3aa69a8fa7e1676e0487927e80e196ba6700c",
     "Tools/scan_previews.py": "564018e8d76da837121f7d643a41faf17efa6fbb1d3c684dbcbc5a46c1246f66",
     "Tools/scan_progress.py": "3de2be4c5f2fc242da40e5c2c69c77481b217212e98f5902e5e3f837617e4585",
-    "Tools/scan_rechtop.py": "9b1da84155686da2fd446bd5aba60e9416facaa7f3af94310636fc16df9aa857",
+    "Tools/scan_rechtop.py": "0d20988ed8d6c1aa56ca9b1739422f57c3c726b8baeda188d044564334fe299f",
     "Tools/scan_release.py": "a5ad3288aa5aa3dc395724a98134f62c8cede08d78990014f7ba323e91fdcd92",
     "Tools/scan_release_advice.py": "c474a67222590c4d60a04107683ead059c64eb4cc1a5bc0934b645212f50346a",
     "Tools/scan_rim.py": "abc08e66e06a5478e6af3e725578b88959cabb24cf10f6e2ad26c469b347b8d3",
@@ -39,6 +39,6 @@
   },
   "test_build_purpose": "general label material-edge fix; 1 mm retouch enabled by default for new scans",
   "source_ui_sha256": {
-    "Source/StudioModel.swift": "2bd811cd690ecdf5fdae9d1b5c314f2044c729e0fc7c1fb6f330885c3fb3fcd3"
+    "Source/StudioModel.swift": "848e221c6750cfbfafee0af9b51094214fc4f45313cbe24743227d388a81011f"
   }
 }

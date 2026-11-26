@@ -6,17 +6,19 @@ release. With a queue, projects and a final review.
 
 ![Sleeve](Artwork/Sleeve.png)
 
-## Test version 0.4.8
+## Version 0.5.46
 
-New in this test version: disk-space management keeps tracking temporary output buffers
-while saving, so other parts can wait for space to free up. After an error, the error
-message appears before a final review is opened. Image processing and output resolution
-are unchanged.
+New in this version, on top of 0.5.45:
+
+- **Transparent vinyl:** an optional light correction per scanner column (button "Light correction (transparent vinyl)"), set per release from Discogs or by you.
+- **Sharp labels:** the whole label is taken from the scan with the sharpest label and placed on the merged record side; optionally the paper label is enlarged by 1 mm. On soft label edges (metallic gold and silver vinyl) the paper edge is confirmed by a second, independent measurement.
+- **Sleeve edges:** a thin dark line along the cut (at least 90% of a side, at most 0.5 mm) is trimmed automatically.
+- **Colour panel:** colour from your own photo, also from a backlit photo, with Brightness and Vividness sliders; no more coloured band along the label.
+- **Archive output:** every new PNG carries an sRGB profile, also after the colours of side A and B are matched.
+- **Stickers:** dark stickers are set upright again when the macOS text recognition was still starting up.
+
 Measurements and quality checks are in [TESTS.md](Documentation/TESTS.md);
 changes are in [CHANGELOG.md](Documentation/CHANGELOG.md).
-Also available: Discogs release suggestions and a separate colour step for sleeves and
-records. Also available: adjusting round crops yourself, reprocessing a single part, and
-the memory fix for large FIRE scans.
 This version is a preview; download the full app package from Releases.
 
 Apple Silicon, macOS 14 or later. The app is signed locally and not yet notarized by
