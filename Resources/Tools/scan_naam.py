@@ -29,36 +29,29 @@ def get(url):
 
 
 def fetch(url):
-    """Ophalen; lukt dat niet met Python (bv. geen certificaten op deze Mac), dan met curl."""
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': UA}), timeout=8) as r:
-            return r.read()
-    except Exception as error:
-        if getattr(getattr(error,'reason',error),'errno',None) in (13,51,64,65):
-            raise RuntimeError('Geen verbinding met Discogs. Controleer de internetverbinding en de netwerktoegang van Sleeve; je kunt ook een eigen referentiefoto gebruiken.') from error
-        import subprocess
-        r = subprocess.run(['curl', '-fsSL', '-A', UA, '--connect-timeout', '8', '--max-time', '20', url], capture_output=True)
-        if r.returncode:
-            raise RuntimeError(f'ophalen mislukt: {url}')
-        return r.stdout
+    """Ophalen via scan_net: één keer per adres, onthouden, opnieuw proberen bij 'te veel aanvragen'."""
+    import os, sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import scan_net
+    return scan_net.fetch(url)
 
 
-def naam(url, kant, extra=''):
+def naam(url, kant, extra='', year=''):
     m = re.search(r'/release/(\d+)', url)
     if not m:
         mm = re.search(r'/master/(\d+)', url)
         if not mm:
-            sys.exit('geen Discogs-release in de link')
+            sys.exit('no Discogs release in the link')
         rid = get(f'https://api.discogs.com/masters/{mm.group(1)}')['main_release']
     else:
         rid = m.group(1)
     r = get(f'https://api.discogs.com/releases/{rid}')
     formats = {(item.get('name') or '').lower() for item in r.get('formats',[])}
     if kant.startswith('cd') and 'vinyl' in formats and not formats.intersection({'cd','cdr'}):
-        raise ValueError('Deze Discogs-link is voor vinyl, maar de scan is een cd. Gebruik de link van de cd-uitgave.')
+        raise ValueError('This Discogs link is for vinyl, but the scan is a CD. Use the link of the CD release.')
     if kant.startswith('side') and formats.intersection({'cd','cdr'}) and 'vinyl' not in formats:
-        raise ValueError('Deze Discogs-link is voor een cd, maar de scan is vinyl. Gebruik de link van de vinyl-uitgave.')
-    jaar = str(r.get('year') or (r.get('released') or '0000')[:4])
+        raise ValueError('This Discogs link is for a CD, but the scan is vinyl. Use the link of the vinyl release.')
+    jaar = str(year).strip() if str(year or '').strip().isdigit() else str(r.get('year') or (r.get('released') or '0000')[:4])   # jaartal kan de gebruiker verbeteren
     titel = slug(r.get('title'))
     fm = (r.get('formats') or [{}])[0]
     fname = (fm.get('name') or '').lower()
@@ -68,7 +61,7 @@ def naam(url, kant, extra=''):
     elif fname in ('cd', 'cdr'):
         formaat = 'cdsingle' if 'single' in desc else ('maxicd' if 'maxi-single' in desc else 'cd')
     else:
-        formaat = slug(fname) or 'onbekend'
+        formaat = slug(fname) or 'unknown'
     labels = [slug((l.get('name') or '').split('(')[0]).replace('_', '') for l in (r.get('labels') or [])]
     voorkeur = ['musiconvinyl', 'goldilox', 'dino', 'emi', 'bmg', 'sony', 'columbia']   # labels uit het schema
     label = next((v for v in voorkeur if any(v in l for l in labels)), labels[0] if labels else '')

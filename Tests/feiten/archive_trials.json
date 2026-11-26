@@ -1,0 +1,186 @@
+{
+  "queen": {
+    "source": "queen_new_scan",
+    "discogs": "19274500",
+    "year": "2021",
+    "dpi": 600,
+    "reference": "Sleeve - nieuwe vinylproeven/Queen - 600 dpi",
+    "files": {
+      "front": "Front.png",
+      "back": "Back.png",
+      "insert": "Boekje-A.png",
+      "insert_2": "Boekje-B.png",
+      "sidea": "Vinyl-A.png",
+      "sideb": "Vinyl-B.png",
+      "sticker": "Sticker.png",
+      "labela": "Label-A.png",
+      "labelb": "Label-B.png"
+    },
+    "groups": [
+      {
+        "part": "front",
+        "files": [
+          "2021_queen_for_a_day_white_vinyl_20261114_0001.tif",
+          "2021_queen_for_a_day_white_vinyl_20261114_0002.tif",
+          "2021_queen_for_a_day_white_vinyl_20261114_0003.tif",
+          "2021_queen_for_a_day_white_vinyl_20261114_0004.tif"
+        ]
+      },
+      {
+        "part": "back",
+        "files": [
+          "2021_queen_for_a_day_white_vinyl_20261114_0005.tif",
+          "2021_queen_for_a_day_white_vinyl_20261114_0006.tif",
+          "2021_queen_for_a_day_white_vinyl_20261114_0007.tif",
+          "2021_queen_for_a_day_white_vinyl_20261114_0008.tif"
+        ]
+      },
+      {
+        "part": "insert",
+        "files": [
+          "2021_queen_for_a_day_white_vinyl_20261114_0009.tif",
+          "2021_queen_for_a_day_white_vinyl_20261114_0010.tif",
+          "2021_queen_for_a_day_white_vinyl_20261114_0011.tif",
+          "2021_queen_for_a_day_white_vinyl_20261114_0012.tif"
+        ]
+      },
+      {
+        "part": "insert",
+        "files": [
+          "2021_queen_for_a_day_white_vinyl_20261114_0013.tif",
+          "2021_queen_for_a_day_white_vinyl_20261114_0014.tif",
+          "2021_queen_for_a_day_white_vinyl_20261114_0015.tif",
+          "2021_queen_for_a_day_white_vinyl_20261114_0016.tif"
+        ]
+      },
+      {
+        "part": "sticker",
+        "files": [
+          "2021_queen_for_a_day_white_vinyl_20261114_0017.tif"
+        ]
+      },
+      {
+        "part": "sidea",
+        "files": [
+          "2021_queen_for_a_day_white_vinyl_20261114_0019.tif",
+          "2021_queen_for_a_day_white_vinyl_20261114_0020.tif",
+          "2021_queen_for_a_day_white_vinyl_20261114_0021.tif",
+          "2021_queen_for_a_day_white_vinyl_20261114_0022.tif",
+          "2021_queen_for_a_day_white_vinyl_sidea_label_20261114_0018.tif"
+        ]
+      },
+      {
+        "part": "sideb",
+        "files": [
+          "2021_queen_for_a_day_white_vinyl_20261114_0023.tif",
+          "2021_queen_for_a_day_white_vinyl_20261114_0024.tif",
+          "2021_queen_for_a_day_white_vinyl_20261114_0025.tif",
+          "2021_queen_for_a_day_white_vinyl_20261114_0026.tif",
+          "2021_queen_for_a_day_white_vinyl_sideb_label_20261114_0023.tif"
+        ]
+      }
+    ]
+  },
+  "together-alone": {
+    "source": "2016_together_alone_vinyl_gold",
+    "discogs": "8388109",
+    "year": "2016",
+    "dpi": 300,
+    "reference": "Sleeve - nieuwe vinylproeven/Together Alone - 300 dpi",
+    "filePrefix": "2016_together_alone_vinyl_musiconvinyl_gold_",
+    "groups": [
+      {
+        "part": "sidea",
+        "files": [
+          "Scan 12.jpeg",
+          "Scan 13.jpeg",
+          "Scan 14.jpeg",
+          "Scan 15.jpeg"
+        ]
+      },
+      {
+        "part": "front",
+        "files": [
+          "Scan 1.jpeg",
+          "Scan 2.jpeg",
+          "Scan 3.jpeg",
+          "Scan.jpeg"
+        ]
+      },
+      {
+        "part": "sideb",
+        "files": [
+          "Scan 16.jpeg",
+          "Scan 17.jpeg",
+          "Scan 18.jpeg",
+          "Scan 19.jpeg"
+        ]
+      },
+      {
+        "part": "back",
+        "files": [
+          "Scan 4.jpeg",
+          "Scan 5.jpeg",
+          "Scan 6.jpeg",
+          "Scan 7.jpeg"
+        ]
+      }
+    ]
+  },
+  "urban-solitude": {
+    "source": "2016_urban_solitude_vinyl_white",
+    "discogs": "8485191",
+    "year": "2016",
+    "dpi": 600,
+    "reference": "Sleeve - nieuwe vinylproeven/Urban Solitude - ACTUEEL - 600 dpi",
+    "filePrefix": "2016_urban_solitude_vinyl_musiconvinyl_white_",
+    "groups": [
+      {
+        "part": "sidea",
+        "files": [
+          "urban_solitude_white_sidea_20261114_0001.tif",
+          "urban_solitude_white_sidea_20261114_0002.tif",
+          "urban_solitude_white_sidea_20261114_0003.tif",
+          "urban_solitude_white_sidea_20261114_0004.tif",
+          "urban_solitude_white_sidea_label_20261114_0001.tif"
+        ]
+      },
+      {
+        "part": "sideb",
+        "files": [
+          "urban_solitude_white_sideb_20261114_0001.tif",
+          "urban_solitude_white_sideb_20261114_0002.tif",
+          "urban_solitude_white_sideb_20261114_0003.tif",
+          "urban_solitude_white_sideb_20261114_0004.tif",
+          "urban_solitude_white_sideb_label_20261114_0001.tif"
+        ]
+      },
+      {
+        "part": "front",
+        "files": [
+          "urban_solitude_white_voorkant_20261114_0001.tif",
+          "urban_solitude_white_voorkant_20261114_0002.tif",
+          "urban_solitude_white_voorkant_20261114_0003.tif",
+          "urban_solitude_white_voorkant_20261114_0004.tif"
+        ]
+      },
+      {
+        "part": "back",
+        "files": [
+          "urban_solitude_white_achterkant_20261113_0005.tif",
+          "urban_solitude_white_achterkant_20261113_0006.tif",
+          "urban_solitude_white_achterkant_20261113_0007.tif",
+          "urban_solitude_white_achterkant_20261113_0008.tif"
+        ]
+      }
+    ],
+    "files": {
+      "front": "2016_urban_solitude_vinyl_musiconvinyl_white_front.png",
+      "back": "2016_urban_solitude_vinyl_musiconvinyl_white_back.png",
+      "sidea": "2016_urban_solitude_vinyl_musiconvinyl_white_sidea.png",
+      "sideb": "2016_urban_solitude_vinyl_musiconvinyl_white_sideb.png",
+      "labela": "2016_urban_solitude_vinyl_musiconvinyl_white_sidea_label.png",
+      "labelb": "2016_urban_solitude_vinyl_musiconvinyl_white_sideb_label.png"
+    }
+  }
+}

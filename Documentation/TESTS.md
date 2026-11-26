@@ -1,3 +1,122 @@
+# Reference test for the facts route (0.5.27, 12 November 2026)
+
+`python3 Tests/feiten/reference.py run` makes the recorded releases again through the bridge
+(the same path as the app) and compares every part: verdict, size in mm (within 0.3 mm), upright
+angle (within 1 degree) and a small image print. The scans are not in the repository; they are
+read from `~/Desktop` (or `SLEEVE_TESTSCANS`). Twelve releases take about 1.5 hours on the
+development Mac; nothing else should run meanwhile, because macOS text recognition falls back
+to fast reading under load and the outcome then differs.
+
+Baseline recorded with 0.5.26: 44 parts, 37 GOED. 0.5.27 gives the same outcome on all 44
+parts ("ALL THE SAME"). The recorded outcomes are what 0.5.26 made; they are not yet approved one
+by one by the owner of the collection (`approved: false` in `reference.json`).
+
+| Release | Parts | GOED | In doubt |
+|---|---|---|---|
+| deena | 3 | 2 | front |
+| deena_cd | 5 | 4 | inlay |
+| fake | 4 | 4 | - |
+| feet_on_the_ground_promo | 3 | 3 | - |
+| hny | 4 | 3 | sidea |
+| places_to_go_promo | 3 | 3 | - |
+| pretending_promo | 3 | 3 | - |
+| queen | 4 | 2 | sidea; sideb |
+| queen_hoes | 2 | 2 | - |
+| ta | 4 | 4 | - |
+| together_alone_cd | 5 | 5 | - |
+| us | 4 | 2 | back; sideb |
+
+Fire and GF (1200 dpi, tier `groot`) are in the set but not recorded yet.
+
+Not covered by a real scan: a dark sheet behind a CD card (only simulated).
+
+## 0.4.23 — English
+
+- Full test suite passes with the English messages (tests updated where they checked Dutch text).
+- TGHT and US processed with 0.4.23 and compared with the reference: both OK (the translated internal signals work).
+
+## 0.4.22 — namen en release-zoeker
+
+- DEENA (600 dpi) met 0.4.22 vergeleken met de referentie (Tests/golden): eerst één onbedoeld verschil gevonden (tekstvel heette inside) en hersteld; daarna alleen het bedoelde verschil (insert_left/insert_right). Referentie bijgewerkt.
+- Release-zoeker met echte OCR en Discogs op 9 promo's: alle 9 de juiste uitgave bovenaan (Together Alone: het album; de promo-single nog uitzoeken). Hints op de 9 vinyluitgaven ongewijzigd.
+- Nieuwe controle in `check_release_advice.py`. Volledige projectcontroles geslaagd.
+
+## 0.4.21 — tekstregels
+
+- Op alle 17 labels van de 0.4.19-run: alleen HNY kant A wordt bijgesteld (−1,48 graden); de rest blijft onder 1 graad en ongemoeid. HNY kant A opnieuw verwerkt: restafwijking 0,00 graden.
+- Nieuwe controle in `check_sides.py`. Volledige projectcontroles geslaagd.
+
+## 0.4.20 — binnenkant en asgat
+
+- Indeling alle 9 uitgaven: alleen DEENA-binnenkant 37–42 (nu één groep) gewijzigd. DEENA 37–42 volledig verwerkt: inside (kamer) en inside_2 (bed), 7388×7143, rechtop via Discogs.
+- Hoes/plaat op alle 50 samengevoegde onderdelen: alleen TGHT kant A verandert (hoes → plaat).
+- 0.4.19-run (600 dpi): HNY-voorkant compleet met ANOUK-balk; GF stopte op volle schijf. Bekend: HNY kant A label 1,45° scheef (onder de bijstelgrens).
+- Nieuwe controles in `check_grouping.py` en `check_cover_boundary.py`. Volledige projectcontroles geslaagd.
+
+## 0.4.19 — hoes of plaat
+
+- DEENA-tekstvellen 10–13 en 14–17 (600 dpi) samengevoegd: hoes, 6955 px (~29 cm), compleet met credits en marge; plaatkant A (18–21): plaat. Controle toegevoegd in `check_cover_boundary.py`. Volledige projectcontroles geslaagd.
+
+## 0.4.18 — hoeskader
+
+- Kader van alle samengevoegde hoezen en vellen van de 9 uitgaven, oud tegen nieuw: alleen veranderd waar drukwerk buiten het oude kader viel — DEENA-tekstvellen (2693 → 3568 px, op de papierrand) en HNY-voorkant (3247×3207 → 3716×3716, ANOUK-balk binnen). FIRE-achterkant, GF-voorkant, FBOW-achterkant en de overige hoezen gelijk.
+- Nieuw geval in `check_cover_boundary.py` (vel met gedrukte binnenlijn en tekst erbuiten). Volledige projectcontroles geslaagd.
+
+## 0.4.17 — kwartslag-delen groeperen en samen plaatsen
+
+- Indeling van alle scans van de 9 vinyluitgaven, oud tegen nieuw: alleen DEENA-tekstvellen (10–13, 14–17) en TGHT-inlay (9–12, 13–16) veranderd; de rest gelijk aan 0.4.14. Een eerdere variant zonder kwartslag-eis voegde GF kant A en B samen (A/B 0,58–0,77); verworpen.
+- Plaatsing van alle 50 samengevoegde onderdelen, slechtste paar voor/na: vrijwel overal beter of gelijk, o.a. US-front 2,3 → 0,9 px, GF-front 2,8 → 1,0, HNY-achterkant 3,5 → 1,4, FBOW-achterkant 3,2 → 1,1, FIRE-front 5,4 → 3,6, DEENA-tekstvel 3,4 → 0,9.
+- DEENA-tekstvellen (600 dpi) volledig verwerkt: naadplekken in de eindcontrole 38 en 49 → 1 en 1 (onder de meldgrens). TGHT-inlay: twee complete vellen.
+- Nieuw: `check_placement.py`, en een kwartslag-geval in `check_grouping.py`. Volledige projectcontroles geslaagd.
+
+## 0.4.16 — promo's, ISRC en labels zonder leesrichting
+
+- Release-zoeker op 9 cd-promo's (Feet On The Ground 2×, Places To Go, You & I, Dominique, Hold Me, New Day, Pretending As Always, Together Alone), echte OCR en Discogs: 7 met de juiste uitgave bovenaan (was 0). Feet On The Ground, Dominique en Hold Me met "ISRC komt overeen"; New Day via promo-voorrang (Discogs heeft daar geen ISRC). Places To Go (gespiegeld logo) en You & I (losse letters) niet.
+- Zelfde OCR op de 9 vinyluitgaven, oud tegen nieuw: betere zoekteksten bij WEN, Urban Solitude, FBOW, Together Alone en DEENA; geen barcode of catalogusnummer verloren, behalve de foute JIH13901 bij TA.
+- 0.4.15-herhaling: TGHT A en B 0,0 graden, DEENA B +0,2 (was 6,1). DEENA kant A los: op 1200 dpi +0,3, op 600 dpi +4,4 zonder leesrichting; met deze versie op 600 dpi +0,2.
+- Nieuwe controle in `check_release_advice.py` (promo-titel, ISRC met en zonder landcode). Volledige projectcontroles geslaagd.
+
+## 0.4.15 — labels tot 8 graden bijstellen, minder meldingen
+
+- 0.4.14-eindtest (9 uitgaven, volle resolutie): alle zonder fouten. Labels recht en rechtop, ook TGHT en FIRE (−0,8 / +0,7 graden), behalve DEENA kant B (6,1 graden) en TGHT kant A (4,2): buiten de oude grens van 4 graden. Vinylkleur: TA goud, US groen, HNY geel en FBOW rood komen overeen met Discogs; bij FIRE twee oranje `_kleur`-voorstellen.
+- Valse naadmeldingen op platen (GF, HNY, FBOW, FIRE, US) en onterecht "nakijken" op voorkanten die op Discogs passen (GF, HNY, FBOW) zijn de aanleiding voor de twee meldingswijzigingen.
+- Volledige projectcontroles (`scripts/check.sh`) geslaagd. De Swift-wachtrijtest loopt vast als tegelijk een zware verwerking draait; op een rustige Mac slaagt hij.
+
+## 0.4.14 — leesstand-zoektocht en strengere naadmeting
+
+- 0.4.13-eindtest (9 uitgaven, volle resolutie): alle zonder fouten; DEENA kant A/B/C/D en TGHT A/B correct ingedeeld; labels recht behalve TGHT (ondersteboven, ~25 graden); eindcontrole gaf vals alarm op platen (US, HNY, FBOW, FIRE, DEENA: tot 134 px).
+- Leesstand-zoektocht op beide TGHT-labels vanuit drie startstanden (0, 70, 200 graden): telkens recht en rechtop.
+- Strengere naadmeting (halve resolutie): HNY-achterkant 29 plekken (terecht), DEENA kant A 1 (onder de drempel), DEENA-tekstvel 0.
+
+## 0.4.13 — kantherkenning, eindcontrole en labelstand
+
+- Indeling van alle scans van acht uitgaven (DEENA, TGHT, TA, US, GF, HNY, FBOW, FIRE): DEENA kant A 18–21, B 23–26, C 28–31; TGHT A 20–23, B 24–27; de overige zes precies gelijk aan de goede indeling van de 0.4.12-run. Kantletters: geen enkele foute letter op alle plaatscans.
+- Een eerdere aanpak (labels pixel voor pixel vergelijken) is verworpen: bij Graduated Fool verschilden scans van dezelfde kant meer dan DEENA A tegen B.
+- Eindcontrole op verkleinde scans: Hotel New York-achterkant 35 plekken (tot ~15 px), Urban Solitude, WEN, FBOW 0 plekken, Together Alone-plaat 1 plek (onder de drempel van 3).
+- Labelfijnbijstelling: WEN kant B +2,7 graden; op 16 al rechte labels van zes uitgaven nul (alle onder 1,5 graden).
+- Volledige projectcontroles (`scripts/check.sh`) geslaagd, met nieuwe `check_sides.py`.
+
+## 0.4.12 — labels, naden, barcodes, voorkant en vinylkleur
+
+- Labels: Urban Solitude A/B en Graduated Fool A/B (uitvoer 0.4.11, verkleind tot 3000 px) stonden +1,9 / −3,5 / +0,6 / +2,2 graden scheef; de nieuwe meting corrigeert dat tot 0,0 graden (onafhankelijke projectiemeting), visueel gecontroleerd. Volledige `scan_cutout`-run op één plaat: 0.4.11 draaide 0,0 graden, 0.4.12 −1,9 graden.
+- Naden: Hotel New York-achterkant (Scan 4–7, halve resolutie). De bronscans liggen lokaal tot 5–19 px uit elkaar (hoes niet vlak). 0.4.11 gaf dubbele/vage letters in de copyrighttekst; 0.4.12 geeft scherpe letters met de naad tussen woorden. Samenvoegtijd 41 s → 67 s op halve resolutie. WEN-front (3500 px) en Urban Solitude-kant A ook samengevoegd: neutraal papierwit, geen zichtbare naden.
+- Barcodes: Urban Solitude, 16 scans: barcode 0602455508959 (alleen op scan 14) en MOVLP1573 gevonden in ~5 s; precies één Discogs-uitgave (27551973). Alleen met de oude tekst-hints (AnoukUrbanSolitud / nSolitude) nu 4 juiste uitgaven in plaats van 0.
+- Voorkant: Together Alone front (308 mm) en front_2 (296 mm, artwork 3,3% kleiner) → front_2 wordt `insert` en ter controle gemarkeerd.
+- Vinylkleur: getest op de vinylkanten van 6 uitgaven tegen Discogs. Alleen Set This Thing On Fire (oranje, gescand als rood) krijgt een voorstel, met Discogs-foto 7, dezelfde die handmatig gekozen was; resultaat visueel gelijk aan de handmatige kleurkopie. Goud, groen, geel, zilver en rood ongemoeid.
+- Releasevoorstellen via de app-koppeling (studio_bridge): Together Alone (19 scans) barcode 0602547578068, 2 voorstellen met de gouden uitgave 8388109 bovenaan, ~4 s; Urban Solitude 1 voorstel (Moss Green). Zonder barcode en met fout catalogusnummer JIH13901: nog steeds 5 juiste Together Alone-voorstellen.
+- Catalogusnummer uit alleen de gelezen tekst: Together Alone MOVLP1572 (was JIH13901), Urban Solitude MOVLP1573, Hotel New York MOVLP1575.
+- Volledige keten (samenvoegen → uitknippen → Discogs-stand) op Urban Solitude A en B en Together Alone B (3500 px / origineel): labels 0,0 graden scheef. In de afgebroken app-run stonden ze +2,0 en −3,5 graden scheef door de Discogs-stand (−1,7 / +3,4 graden). Together Alone B: goud weer egaal; Hotel New York-tekst blijft scherp.
+- Discogs-stand na de labelfix: Discogs-foto's wijken af bij Urban Solitude −1,9 tot +3,5, Together Alone −1,3 tot 0,0 (labels blijven 0,0 graden), FIRE A/B +36,4 / +37,2 met drie foto's eens (label nu zoals ontworpen, gelijk aan Discogs). Volledige FIRE-run via de app-koppeling: hoes, achterkant en twee automatische _kleur-voorstellen (rood → oranje) goed; labels toen nog 36 graden verkeerd, daarna met deze regel gecorrigeerd.
+- Wachtrij van 6 uitgaven via de app-koppeling (eerste 0.4.12-build): TA en FBOW goed; US-back wazige woorden (scanrand gekozen terwijl scan 13 scherp was), HNY-back naad door tekst, FIRE-labels niet gedraaid (fout in Discogs-stand), GF kant A: label in Scan 9–11 wijkt af van Scan 12 (twee verschillende labels in de bronscans).
+- Na de corridor-fix (verkleind): US-back scherp, HNY-back naden tussen woorden zonder dubbele letters; controles TA-goud, WEN-front en FBOW-front ongewijzigd goed. FIRE-labels na Discogs-stand 0,0 graden afwijking. FIRE-back niet verkleind te testen (8 deelscans passen op 35% niet betrouwbaar).
+- Niet uitgevoerd: volledige app-run op volle resolutie, de volledige regressieset en de native app-controles.
+
+## 0.4.11 — kleurgloed bij samengevoegde hoezen
+
+- WEN front (Scan 1–4) en back (Scan 5–8): in de 0.4.10-uitvoer gemeten papierwit bovenaan back ongeveer RGB 244/218/217 (roze) en front deels ~207 (grijs) en ~254 (overbelicht), terwijl de bronscans overal neutraal papier hebben (~235/235/234). Oorzaak: per kanaal sterk verschillende lichtcorrectie (hellingen tot 0,6 in log-ruimte; bij de back rood 0,07 tegenover groen 0,39).
+- Controle op verkleinde kopieën (langste zijde 3500 px) van dezelfde scans: met 0.4.10 dezelfde gloed; zonder kleurcorrectie neutraal; met 0.4.11 neutraal papierwit (~245) zonder zichtbare naden, visueel gecontroleerd.
+- Niet uitgevoerd: volledige-resolutierender van WEN met 0.4.11, andere uitgaven (FIRE, FBOW, GF) en de volledige regressieset.
+
 ## 0.4.10 — witte hoesranden, gedeelde logo’s en losse hoekscans
 
 - WEN: acht oorspronkelijke hoesdeelscans opnieuw op volledige resolutie verwerkt tot front (14671 × 14749) en back (14671 × 14769), met de juiste namen. Beide bestanden leesbaar; verkleinde resultaten visueel gecontroleerd op de hoesranden en behoud van tekst/witte rand.

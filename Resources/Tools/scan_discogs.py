@@ -22,22 +22,14 @@ from PIL import Image
 Image.MAX_IMAGE_PIXELS = None
 
 UA = 'Sleeve/0.3.1'
+MAX_PHOTO_SKEW = 6.0   # graden: kleinere afwijking van een Discogs-foto is scheef gefotografeerd
 
 
 def get(url):
-    """Ophalen; lukt dat niet met Python (bv. geen certificaten op deze Mac), dan met curl."""
-    try:
-        req = urllib.request.Request(url, headers={'User-Agent': UA})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            return r.read()
-    except Exception as error:
-        if getattr(getattr(error,'reason',error),'errno',None) in (13,51,64,65):
-            raise RuntimeError('Geen verbinding met Discogs. Controleer de internetverbinding en de netwerktoegang van Sleeve; je kunt ook een eigen referentiefoto gebruiken.') from error
-        import subprocess
-        r = subprocess.run(['curl', '-fsSL', '-A', UA, '--connect-timeout', '8', '--max-time', '20', url], capture_output=True)
-        if r.returncode:
-            raise RuntimeError(f'ophalen mislukt: {url}')
-        return r.stdout
+    """Ophalen via scan_net: één keer per adres, onthouden, opnieuw proberen bij 'te veel aanvragen'."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import scan_net
+    return scan_net.fetch(url)
 
 
 def release_images(url, with_metadata=False):
@@ -45,7 +37,7 @@ def release_images(url, with_metadata=False):
     if not m:
         mm = re.search(r'/master/(\d+)', url)
         if not mm:
-            sys.exit('geen Discogs-release in de link gevonden')
+            sys.exit('no Discogs release found in the link')
         master = json.loads(get(f'https://api.discogs.com/masters/{mm.group(1)}'))
         rid = master['main_release']
     else:
@@ -68,6 +60,18 @@ def on_white(rgba):
     return (bgr * a + 255 * (1 - a)).astype(np.uint8)
 
 
+_PHOTO_FEATS = {}
+
+
+def _photo_feats(sift, im):
+    """Punten van een Discogs-foto: één keer berekenen (dezelfde foto wordt met elke scan vergeleken)."""
+    import hashlib
+    key = (im.shape, hashlib.blake2b(np.ascontiguousarray(im).tobytes(), digest_size=16).digest())
+    if key not in _PHOTO_FEATS:
+        _PHOTO_FEATS[key] = sift.detectAndCompute(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY), None)
+    return _PHOTO_FEATS[key]
+
+
 def matches(ours, imgs, with_coverage=False):
     """Alle Discogs-foto's die passen: [(overeenkomsten, index, transformatie ons -> discogs)], beste eerst."""
     sift = cv2.SIFT_create(4000)
@@ -77,7 +81,7 @@ def matches(ours, imgs, with_coverage=False):
     if d1 is None or len(d1) < 10:
         return found
     for n, im in enumerate(imgs):
-        k2, d2 = sift.detectAndCompute(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY), None)
+        k2, d2 = _photo_feats(sift, im)
         if d2 is None or len(d2) < 10:
             continue
         m = cv2.BFMatcher().knnMatch(d1, d2, k=2)
@@ -107,22 +111,22 @@ def main():
 
 def main_with_memory():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('scan'); p.add_argument('discogs', help='Discogs-link of een eigen referentiefoto')
-    p.add_argument('extra', nargs='*', help='meer eigen referentiefoto\'s')
+    p.add_argument('scan'); p.add_argument('discogs', help='Discogs link or your own reference photo')
+    p.add_argument('extra', nargs='*', help='more reference photos of your own')
     p.add_argument('--uit'); p.add_argument('--alleen-stand', action='store_true'); p.add_argument('--alleen-kleur', action='store_true')
     a = p.parse_args()
     with Image.open(a.scan) as original:
         source_mode=original.mode
         metadata = {key:original.info[key] for key in ('dpi','icc_profile') if key in original.info}
     from scan_memory import MemoryLease
-    with MemoryLease(39 if metadata else 27,phase='Draairichting vergelijken met Discogs'):
+    with MemoryLease(39 if metadata else 27,phase='Comparing rotation with Discogs'):
         return apply_reference(a,source_mode,metadata)
 
 
 def apply_reference(a,source_mode,metadata):
     raw = cv2.imread(a.scan, cv2.IMREAD_UNCHANGED)
     if raw is None:
-        sys.exit(f'kan {a.scan} niet lezen')
+        sys.exit(f'can’t read {a.scan}')
     if raw.ndim == 2:
         raw = cv2.cvtColor(raw, cv2.COLOR_GRAY2BGRA)
     if raw.shape[2] == 3:
@@ -138,18 +142,18 @@ def apply_reference(a,source_mode,metadata):
     else:
         title, imgs = release_images(a.discogs)
     if not imgs:
-        sys.exit('geen foto\'s gevonden bij deze Discogs-uitgave')
+        sys.exit('no photos found for this Discogs release')
     s = 1000 / max(raw.shape[:2])
     small = cv2.resize(raw, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
     ours = on_white(small)
     detailed = matches(ours, imgs,with_coverage=True)
     found=[item[:3] for item in detailed]
     if not found:
-        sys.exit(f'geen Discogs-foto gevonden die bij de scan past ({title})')
+        sys.exit(f'no Discogs photo found that matches the scan ({title})')
     k, n, M = found[0]
     ang = float(np.degrees(np.arctan2(M[1, 0], M[0, 0])))     # hoek ons -> discogs (beeldcoördinaten)
     round_ = small[..., 3].mean() / 255 < 0.9                 # transparante hoeken = plaat
-    print(f'Discogs: {title} — foto {n + 1} past best ({k} overeenkomsten)')
+    print(f'Discogs: {title} — photo {n + 1} fits best ({k} matches)')
     if detailed[0][3]>=.20:print(f'SLEEVE_REFERENCE_IDENTITY {n+1}')
 
     out = raw
@@ -185,35 +189,55 @@ def apply_reference(a,source_mode,metadata):
                 H = (H + dh * w) % 360; S = np.clip(S * (1 + (sr - 1) * w), 0, 1); V = np.clip(V * (1 + (vr - 1) * w), 0, 1)
                 hsv = np.dstack([H * 256 / 360, S * 255, V * 255]).clip(0, 255).astype(np.uint8)
                 out[y0:y0 + 256, :, :3] = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR_FULL)
-            print(f'kleur (foto {nc + 1}): hoofdtint {hc:.0f} graden -> {dh:+.1f}, verzadiging x{sr:.2f}, helderheid x{vr:.2f}')
+            print(f'color (photo {nc + 1}): main hue {hc:.0f} degrees -> {dh:+.1f}, saturation x{sr:.2f}, brightness x{vr:.2f}')
         else:
-            print('kleur: te weinig gekleurd vlak om te vergelijken, niet aangepast')
+            print('color: too little colored area to compare, not adjusted')
     # stand
     if not a.alleen_kleur:
-        rot = ang if round_ else 90 * round(ang / 90)
+        # Plaat: het label is al op zijn eigen tekst rechtgezet. Een Discogs-foto
+        # staat zelf vaak een paar graden scheef (Urban Solitude: -1,9 tot +3,5),
+        # dan alleen de kwartslag overnemen. Wijkt de foto veel af, dan was de
+        # labeltekst bewust schuin ontworpen (FIRE: +35 graden): volg dan de foto.
+        rot = 90 * round(ang / 90)
+        if round_ and abs(ang - rot) > MAX_PHOTO_SKEW:
+            rot = ang
         if abs(rot) >= 0.2:
             changed=True
-            if not round_:
+            if rot % 90 == 0 and (not round_ or out.shape[0] == out.shape[1]):
                 # Exact quarter turns need no interpolation, padding or lost edge pixels.
                 out = np.ascontiguousarray(np.rot90(out, -int(round(rot / 90))))
             else:
                 h, w = out.shape[:2]
-                R = cv2.getRotationMatrix2D((w / 2, h / 2), -rot, 1.0)
+                turn = -rot
+                if round_:
+                    # De Discogs-foto staat zelf vaak iets scheef (Hotel New York kant A:
+                    # 1,5 graden). Na het volgen van de foto de rechte tekstregels op het
+                    # label nameten en dat restje alsnog rechtzetten (één keer draaien).
+                    from scan_cutout import text_line_angle, TEXT_LINE_MIN
+                    trial = cv2.warpAffine(out, cv2.getRotationMatrix2D((w / 2, h / 2), turn, 1.0), (w, h), flags=cv2.INTER_LINEAR)
+                    s = min(h, w); lb = int(s * .18)
+                    label = Image.fromarray(np.ascontiguousarray(trial[h // 2 - lb:h // 2 + lb, w // 2 - lb:w // 2 + lb, :3][..., ::-1]))
+                    rest = text_line_angle(label)
+                    if rest is not None and abs(rest) >= TEXT_LINE_MIN:
+                        turn += rest
+                        print(f'text lines re-measured after the Discogs photo: another {rest:+.1f} degrees adjusted')
+                R = cv2.getRotationMatrix2D((w / 2, h / 2), turn, 1.0)
                 out = cv2.warpAffine(out, R, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
-            print(f'stand: {rot:+.1f} graden gedraaid ({"plaat, exact" if round_ else "hoes, per 90"})')
+            how='exactly as the Discogs photo' if rot % 90 else 'per quarter turn'
+            print(f'orientation: rotated {rot:+.1f} degrees ({"record" if round_ else "cover"}, {how}; Discogs photo was {ang:+.1f})')
     destination=a.uit or a.scan
     if not changed and source_mode=='RGBA' and os.path.splitext(destination)[1].lower()==os.path.splitext(a.scan)[1].lower():
         if os.path.abspath(destination)!=os.path.abspath(a.scan):
             import shutil
             shutil.copy2(a.scan,destination)
-        print('beeld ongewijzigd; opnieuw opslaan overgeslagen')
-        print('klaar:',destination)
+        print('image unchanged; saving again skipped')
+        print('done:',destination)
         return
     if metadata:
         Image.fromarray(cv2.cvtColor(out, cv2.COLOR_BGRA2RGBA)).save(a.uit or a.scan, compress_level=1, **metadata)
     else:
         cv2.imwrite(a.uit or a.scan, out, [cv2.IMWRITE_PNG_COMPRESSION, 1])
-    print('klaar:', a.uit or a.scan)
+    print('done:', a.uit or a.scan)
 
 
 if __name__ == '__main__':

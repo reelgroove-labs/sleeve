@@ -1,3 +1,240 @@
+# 0.5.45 — Tone measured on the part only; partial scans laid on each other locally; scan order per name
+
+- **The coarse tone is measured on the part itself, 2.5 mm inside the found edge.** Partial scans are blended on a very coarse tone (2.5 mm). Along the edge that tone also counted the lid and the shadow next to the part, which differ per scan, so each scan brought another haze into the edge and, where the scans change, a small step (Queen For A Day 2021 back, left and right edge in the middle: a dark block and a step). Fact now: what lies outside the found edge never reaches the result, so it does not count in the tone either. Sleeve finds the edge on the plain merge (the same edge finder as the route afterwards), measures the tone only from 2.5 mm inside it (the shadow size of the edge cleaning), and leaves everything outside the edge exactly as before (the edge finder afterwards looks at that picture too). Where no edge is found, or a scan sees almost none of the part, the old measurement stays. Same rule for sleeve, insert, fold-out, record (the centre hole is not part) and CD.
+  - Queen 2021 back: the dark block and the step in the middle of the left and right edge are gone. Deena back: GOED again (311.6 x 311.6 mm). Queen A/B: the two sides of the record are now 0.2 mm apart (294.7 / 294.9), were 1.6 mm.
+  - Reference test, all 18 releases (no FOUT, no verdict changed except Graduated Fool back): 23 sizes changed, 16 by at most 0.5 mm, 6 by 0.5–1 mm, 1 by 1.6 mm (Queen 2021 A, a record that gets closer to its B side). Deena CD, Together Alone CD and the three promo CDs: all the same as recorded.
+  - **Known limit: Graduated Fool front.** The left edge of that sleeve is almost invisible (silver on a white lid) and the edge finder has several candidates there (7.9 / 8.2 / 10.4 / 11.2 mm). With the rule it picks another: the cut is about 1 mm wider, a thin white strip of lid stays at the left, and the back goes from GOED to TWIJFEL ("front and back differ"). Without the rule the cut was already 0.8 mm too wide. Scan that front again with a dark sheet behind it.
+- **Partial scans are laid on each other locally.** A sleeve does not lie equally flat in every scan: along the edge the same paper edge can differ by tenths of a millimetre between two scans (Queen 2021 back: 0.7 mm). The optical flow between each pair measures it where there is print or edge; each scan moves to the average of the scans at that place (with 3 or 4 scans a third or a quarter of every pair difference; before, always half, which moved 3–4 scans 1.5–2 times too far). Where nothing can be measured or the difference is below 0.15 mm, everything stays as it was. Switch: SLEEVE_LOCAL_ALIGN=0.
+- **Scan order: a counter per name is respected.** The scanner numbers every scan, and that continues when you give another name in between (queen_..._0017, queen_sidea_label_..._0018, queen_..._0019). When two series with their own name each count again over the same numbers (us_white_sidea_..._0001 to 0004, us_white_sideb_..._0001 to 0004), the name is the order. Before, only the last number counted: all the 0001s first and the parts mixed (us_new_white_back3: 10 stacks, now one per part). New check: Tests/check_scan_order.py (in scripts/check.sh).
+- Thumbnails carry the whole folder in their name: two scans with the same name from different folders no longer read each other's thumbnail.
+- Half-resolution copies of a very large set are always removed afterwards, and no 0 dpi is written when the scans have no resolution.
+- Sticker: a round sticker gets angle 0 (it does not stand crooked); when the edge lies inside the frame the shape shrinks with it (before the corners of the frame stayed instead of round corners).
+- App: the option "Level the tone of plain light vinyl" is only offered for side A–D (side E and F do not exist).
+- **Faster:** at full resolution the merge no longer computes a small copy of the whole tone blend that was thrown away anyway (only the coverage is needed). Queen 2021 back: 146 s to 102 s without the rule; the rule costs about 27 s more per part (edge search on half size, a plain merge on a quarter). Deena (1200 dpi, 3 parts) 18.5 minutes in 0.5.44, 22.5 now: the rule and the other changes take more time on the big releases.
+- Stitch cache key of the reference test: the part and the switches are in it. Test switches (not for use): SLEEVE_TONE=0 (rule off), SLEEVE_LOCAL_ALIGN=0.
+- Reference test of 15–16 November, all 18 releases: no FOUT, no part lost. Not recorded as new reference (sizes changed by up to 1.6 mm; not approved by André).
+
+# 0.5.44 — Sticker: no shadow line along the edge
+
+- **A thin dark line along one edge of a sticker is cut away.** The edge of the sticker can throw a shadow of a few pixels on the plastic sleeve (Queen For A Day 2021, bottom: 3 px at L 25–37 next to 58 on the sticker). Its colour was still close enough to the sticker to stay. Fact now: when the outermost pixel that would stay is clearly darker (15 L or more) than the sticker 3–6 px further in on the same side, it goes too (at most 5 px per side). Checked on 7 stickers: on three a dark edge line went, nothing of the print.
+
+# 0.5.43 — Fix for the vinyl tone option; night test all the same
+
+- **Fix: "Level the tone of plain light vinyl" could put random values in the picture.** The step that maps the measurement around the record back onto the flat picture (cv2.warpPolar, inverse) sometimes filled in garbage, on a CD reported as "90 L lighter". Sleeve now maps it back itself; the same picture gives the same result every time. Do not use the option in 0.5.42.
+- **Option tested on every record and CD of the reference test** (with the fix): size and verdict the same everywhere. Lighter by at most 5.9 L on plain light vinyl (Queen 2021 A/B 4.1/5.1, Urban Solitude white 4.3/5.9, Queen old 5.4/5.8, Hotel New York yellow 4.7/4.7). Left alone: black, blue and green translucent vinyl ("only light vinyl"), and printed CDs with more than one colour. Light one-colour CD prints are levelled by 2.6–3.2 L if the option is used on them; the app only offers it for record sides.
+- **Full reference test (night of 14 November, 0.5.41): all 17 releases the same** as recorded (22:08–01:28). The rule "an edge that could not be seen gives doubt" (0.5.37) turned no part of the reference into doubt. Queen For A Day 2021 new scans recorded as queen_paars: 7 of 7 GOED (not yet approved).
+
+# 0.5.42 — Option: level the tone of plain light vinyl
+
+- **New option when reprocessing a record side: "Level the tone of plain light vinyl".** White vinyl can show faint grey patches from the scanner light (Queen For A Day 2021 side A, top right: lightness 96.5 where the rest at that distance is 99.2). Sleeve measures the lightness of the vinyl around the record at each distance from the centre (0.5 mm across, 1 degree around) and makes darker spots as light as the vinyl at the same distance. What is the same all the way round stays as it is (the rounded rim, the run-out), and grooves, dust and scratches stay as scanned: the three colours get the same factor, only lighter, at most 8 L. Only for plain light vinyl (90% within ΔE 12 of one colour, lightness 60 or more); the label is left alone. Off by default; the result says when it was used and by how much.
+- Queen 2021 side A with the option: the strip at the top right from 96.5 to 98.5, nothing around it lighter than before; GOED, 297.9 mm, as without.
+- Not a content-aware fill: nothing is drawn that was not scanned.
+- Reference: Queen For A Day 2021 new scans added as case queen_paars (Discogs release 19274500).
+
+# 0.5.41 — Arranging twice as fast; Queen For A Day (2021) arranged by itself; sticker edge per side
+
+- **Arranging is about twice as fast.** Each Discogs photo is measured once instead of once for every scan, and the scans are made small and read for a barcode three at a time. Queen For A Day, 27 scans at 600 dpi: 68 → 33 seconds (measured while another test ran), the same slots and names.
+- **Scan order from the number at the end of the file name** ("…_0018.tif"): label scans no longer sort after everything else.
+- **A front needs the cover at full size.** A Discogs photo counts as a cover photo only when the cover fills it (at least 70% of its width), and the cover must show at least 250 mm wide on an LP scan (96 mm on a CD). The two lyric sheets of Queen For A Day print the cover small; they are inserts, not fronts.
+- **A sticker is checked before insert/inside**, so a sticker scan is never called insert.
+- **Sticker edge per side.** The cut moved in until the band just inside it had the sticker's colour, measured over all four sides together; one side could keep a hair of background (Queen: 6–8 pixels of grey along the bottom). Each side is now checked on its own. Checked on 7 stickers: only background goes.
+- Queen For A Day 2021, new scans (white vinyl on purple, 4 + 1 per record side, sticker): all 27 scans in the right slot by themselves; 7 of 7 parts GOED.
+- Test switch (off by default): SLEEVE_GLASS_RECORDS=1 applies the glass light pattern to records too.
+
+# 0.5.40 — Arranging: barcode beats a cover look-alike; a sleeve turned half-way stays one stack
+
+- **A barcode outweighs a cover photo.** A back can show the cover small; when one scan of a stack has the release barcode and another looks like the Discogs cover, the stack is the back (it was "conflicting facts").
+- **A sleeve turned half a turn between its scans stays one stack.** The two halves share little print, which looked like "the cover printed again on an insert". A weak but real overlap now joins a stack that is not yet a whole sleeve, if the stack thereby becomes one (at least 305 mm both ways). Two 29 cm booklet pages never become a sleeve together, so they stay apart.
+- Urban Solitude white, rescanned on 14 November (18 scans): all in the right slot by themselves, label scans with the right side. Reference arrange test unchanged.
+- Found while comparing: a light yellow sheet is too light for white vinyl (a thin rim line stays), and a cream sleeve on the white lid has too little contrast (a strip of background on the front). Use purple or dark for those; the back on purple was right.
+
+# 0.5.39 — Help: which sheet behind which part
+
+- **Help has a table "Which sheet behind the part"**: black vinyl and dark sleeves on the white lid; white or light vinyl, sleeves, cards and inserts on a purple or dark sheet (not light yellow); translucent blue/green with an orange or yellow sheet, magenta/red with green, yellow with blue or purple, clear with matt black (all option A); the label in the middle of the glass on the white lid; a sticker on its own plastic sleeve. Plain, matt, no print.
+- Checked: 4 quarter scans + 1 label scan give a record that is sharp everywhere. On Urban Solitude blue the label went from sharpness 30 to 1896; the vinyl itself (grooves, gloss) was already as sharp as it shows.
+
+# 0.5.38 — Translucent vinyl (option A); a sharp label from a separate label scan
+
+- **Option A for translucent vinyl.** Per position two scans without moving the record: one with the white lid (the true colour) and one with a coloured or dark sheet laid on the record (there the edge is visible). Sleeve tells them apart by the background along the scan border (white and colourless, or not), merges each set, measures the edge on the sheet merge, lays that merge on the lid merge (same record, same label: a shift and turn, scale 1, on matching points) and cuts the lid merge with exactly that circle. Urban Solitude blue side A: 297.3 mm instead of 298.7, and the light streak of the rim (the white lid shining through) is gone.
+- **Arranging:** a sheet scan lies at the same place as its lid scan, so it no longer starts a new stack; it joins the stack it matches best. All 9 scans of side A land in one slot. Only scans that show the rim of a record are paired this way (sleeve scans can have the white lid along some borders and print along others: Deena inside); the arrange test stays as it was.
+- **A sharp label: one extra scan with the label in the middle of the glass.** In the quarter scans the label lies against the edge of the glass and is blurred all over; put the extra scan in the same slot and the label comes from it (the sharpest scan wins on text): 10× sharper on Urban Solitude blue. Scanning guide and Help say so ("4 + 1" scans per record side).
+- **Sheet colour:** for white or other light opaque vinyl a purple or dark sheet; a light yellow sheet shows the edge of white vinyl too faintly (Urban Solitude white side A: a thin line of the rim stayed, 0.6 mm per side). Yellow is for translucent blue and green.
+
+# 0.5.37 — An edge that could not be seen is now doubt; Help and scanning guide for stickers
+
+- **A side whose edge could not be seen gives doubt.** Sleeve already knew when an edge of a sleeve or card was not visible along most of its length (it then placed that side by the known size), or when the edge of a record or CD was not visible at some of the 36 places around it. Without a reason the route still reported GOED. Now: "the left edge could not be seen along most of its length; placed by the size of this part" or "the edge of the record could not be seen at 3 of 36 places (at 20, 30, 40 degrees)", each with "How do I fix this?".
+- **Help:** arranging now explains the Inlay, Insert/Inside and Sticker names; a Stickers section on how to scan them.
+- **Scanning guide:** stickers (one scan on the plastic sleeve, flat, lid closed) and the two new messages.
+- Not yet measured how many parts of the reference test this turns from GOED into doubt: that is tonight's full test.
+
+# 0.5.36 — Stickers recognised when arranging; strip stickers without a frame
+
+- **A sticker scan gets the Sticker slot by itself.** Fact: a small closed shape with rounded corners, or a circle, on an otherwise empty scan (its plastic sleeve): at most 15% of the scan. A CD booklet or card has sharp corners and a CD is a 120 mm circle, so those are never called sticker. Checked on the reference test: no CD card became a sticker.
+- **Strip stickers without a frame** ("new album"): the cut moves in from the found edge until just inside the cut is the colour of the sticker, not of the background. This also removes the thin strip of background that could stay along a framed sticker. Corners are checked on colour only where a pixel is clearly background.
+- Dark moss-green Music On Vinyl stickers (from 2025): macOS cannot read the text, so they come in doubt; choose the turn yourself.
+
+# 0.5.35 — Stickers
+
+- **A sticker is cut out from its own scan** (Sticker slot; the sticker sits on its plastic sleeve). `scan_sticker.py` works on facts: a closed rectangle with rounded corners (the printed frame of a Music On Vinyl sticker), with the sticker's edge at the same distance all around it (found on all four sides at once, the nearest edge that is clear on every side); or a closed rounded rectangle that is itself the edge (a strip without a frame); or a round edge that runs all around, perpendicular to the radius, measured in 180 directions. The shape of the frame, made larger all around, gives the corners; corners are then checked on colour (the corner of a sticker can be rounder than its frame). Saved with transparent corners and the size in mm.
+- **Upright on the text:** artist and title of the release (Discogs), or other clearly readable text; a round sticker is set upright to the degree, like a record label. Dark stickers whose text macOS cannot read give doubt with the turn choices.
+- Tested on André's 7 examples (6 framed rectangles, 1 round; chat images without resolution): all cut cleanly; 5 of 6 set upright on the release text.
+- Help: Sticker in the scan table, and two messages explained.
+
+# 0.5.34 — A faster reference test; the CD inlay is named when arranging
+
+- **Quick test for merging** (`Tests/feiten/snel.py`): for every part of the reference test, only the choice "which partial scan where" is computed at working size, with the code of now and of the last commit, and compared. A few minutes per release instead of a full run; it ends with the releases that need the full test.
+- **The full test reuses merged images** while the merging code is unchanged (cache, at most 3 GB, and only while at least 8 GB stays free), and `--hoezen` makes and compares only sleeves and sheets when the quick test says records and CDs are unchanged.
+- **The CD inlay gets its name when arranging.** A jewel case has exactly two cards of ±150 mm: the back and the inlay. Once the back is found (barcode), another loose scan with such a card is the inlay. A square 120 mm card can be insert, inside or the back of a promo: no name.
+- Tried and not kept: letting a seam move up to 15 mm where two partial scans differ on it (to hide a step in a line where a sheet did not lie flat). It fixed one insert but moved found edges by 1 mm or more on others (Deena back +1.3 mm, Queen insert −0.8 mm). Scanning flat solves the cause; Sleeve does not hide it afterwards.
+
+# 0.5.33 — Seam levelling as an option
+
+- **"Level tone across the seams"** in Reprocess Part… For a light or dark band where two partial scans meet. Seam levelling was switched off in 0.5.29 because it moved the found edge (Queen insert 1.2 mm). Now Sleeve first merges as usual and finds the edges on that; then it merges a second time with the tone levelled and takes only the pixels from that version, with exactly the same cut. If the two merges do not lie on exactly the same canvas, the normal result stays and you get a note. Tested on the Queen insert: same size to the pixel (303.7 × 308.7 mm), tone corrected smoothly by about ±4 levels. It takes about twice as long, so it is only for a part that needs it.
+
+# 0.5.32 — Records cut on the flat vinyl; real circles; Help in the app
+
+- **A dark edge along a record is cut off.** The rounded rim of a record shows as a darker band (the shadow of the curve) that runs gradually into the flat vinyl. The cut was on the first jump inside the rim, which left up to ±0.8 mm of that band on light vinyl (HNY side B, yellow). Sleeve now measures, in 24 pieces around the record, where the vinyl has the colour of the flat record again (within 3 ΔE of the record 3 to 5 mm in) and cuts there; the median of the 24 pieces counts, because the scanner light comes from one side and the rim looks wider on the shadow side. Only a darker rim counts: a lighter one is the lid shining through translucent vinyl, or gloss, and that is real record (blue vinyl would otherwise lose 1.5 mm of real vinyl). Checked on all 16 record sides of the reference test: only HNY side B changes (298.1 → 297.4 mm, close to the 297.3 approved with 0.5.28).
+- **Records and CDs are cut as real circles.** OpenCV drew the large mask as a 72-sided polygon, up to 0.13 mm inside the circle between its corners (small kinks along the edge). Now round to 0.002 mm.
+- **Inserts and the inside get a name when arranging.** A release has one front and one back. Once both are found, every other sheet that is not a record is an insert, or the inside of a gatefold when its scans together cover more than 58 cm (an opened gatefold is ±62 cm; a 30 cm sheet in four scans covers 33 to 46 cm of glass). If the release has an inside, no other stack is called insert (a loose piece of the inside would otherwise be named insert). Reference arrange test: no scan in a wrong slot; Fake, Fire, Urban Solitude white and green are now completely right (10 of 17 in all). A stack that looks like the cover but whose scans cover less than 305 mm one way can't be the sleeve (a print of the cover on a smaller sheet), so the real front keeps its name. CD backs and inlays stay unnamed: both are ±150 × 118 mm and promos have no barcode.
+- **Help in the app** (Help button, or ⌘?): the scanning guide, how many scans per part, how arranging works, and every doubt message in plain words with what to do about it. In the Final Check, each doubt reason has "How do I fix this?", which opens that explanation right under it.
+
+# 0.5.31 — Arrange Scans sorts the scans itself
+
+Arranging meant dragging every partial scan into its slot (16 to 30 drags per release). Sleeve now does the sorting; you check it.
+
+- **Stacks first.** Partial scans of one part share print, so Sleeve matches them on small copies (2 px/mm, scale 1: same scanner, same dpi) and walks them in file order, the way you scan (front, back, side A, side B …). A new part starts where a scan has no overlap with the stack so far, where it lies at the same place on the glass as a scan already in the stack (side B after side A, two identical inserts), or where it matches much more weakly than the stack does (the cover printed again on an insert). File order sorts like the Finder: `00.jpeg` before `00 1.jpeg`.
+- **Then names, only on facts:** the barcode makes the whole stack the back (and the stack that matches the same Discogs photo is the back scanned again); the Discogs cover photos make the front; the continuous rim of a 30 cm record makes a side; a 120 mm disc makes the CD. Sides get A, B, C, D in scan order; after processing, Sleeve reads the letter on the label and doubts if it differs.
+- **No name when it is not certain.** If more than one stack looks like the cover (an insert with the cover on it), none is called front. A stack without a name gets a slot that says "choose the part" with the reason; one click instead of four drags.
+- **Move a whole slot** to another slot with one menu, for a part that came in two stacks.
+- Measured on the 17 releases of the reference test (`Tests/feiten/indeling.py`, a few minutes, nothing processed): no scan in a wrong slot; 6 releases completely right; in the others the stacks are right but inserts, an inside and CD backs without a barcode on Discogs have no name; Deena's inside comes in two stacks.
+
+# 0.5.30 — Five bugs fixed: decisions, rotating, remembered choices, a rare merge crash, record colour
+
+Found in a bug hunt through the facts route (14 November); each one reproduced first, then fixed and checked.
+
+- **A decision on the second insert no longer overwrites the first.** Two inserts of one release get the same name (`_insert` and `_insert_2`). Answering a question on the second one rewrote `_insert.png` with the second image, so one insert was lost. A decision now replaces exactly the file you decided on.
+- **Rotating works without Discogs text.** With no Discogs link (or Discogs not reachable), "which way is up" offered 90/180/270, but the choice was ignored and the same question came back. It is now applied.
+- **A remembered decision belongs to the scans you saw.** Decisions were remembered by file name only. A new scan with the same name in the same folder silently got the old "keep as it is" and was reported GOED. The size and date of each scan are now remembered with it; a replaced scan is judged afresh.
+- **Merging no longer crashes at certain image heights** (new in 0.5.29, about 1 in 250 parts): the last band fell outside the reduced depth map. Results for every other height are identical.
+- **New Release always starts in Process Scans.** After Adjust Color, a new release opened in Adjust Color.
+- **A record side made again after a decision keeps the colour of its other side.** Side A and B are matched once after a run; a side remade after a decision came back with the scanner's colour. It is now matched to the other side (which stays as it is). The colour matching also no longer turns a side black when too little vinyl is visible.
+
+# 0.5.29 — Sharp small text on stitched sleeves, no patchwork on vinyl, light falloff of the glass removed
+
+Found on the Urban Solitude scans on a purple sheet (12–13 November), checked against the full reference test.
+
+- **Small text comes from the sharp scan.** The threshold for "this is print" was computed on a quarter-size image and came out about 100 times too high, so small grey text counted as plain paper and a blurred partial scan could win there. Now, where one scan is clearly sharper (1.8×), the whole block of text around it (±1.5 mm) is taken from the scan that is sharpest there. Elsewhere on a sleeve the choice is as in 0.5.28, so the found edges do not move.
+- **No more patchwork on vinyl.** On a record, "sharpness" in the grooves is only gloss. Away from the label and the rim, the partial scan in which that spot lies furthest from the edge of the glass is used. Side effect (approved): a narrow strip (±1 mm) of the rounded rim of the record is now in the image; cutting exactly on its inner side follows in 0.5.30.
+- **The light falloff of the glass is measured and removed on sleeves.** On this scanner the right part of the glass is 2–3% darker, in every scan. Sleeve measures that from even areas in all partial scans together and removes it before the scans are matched; it is saved next to the scans (`.sleeve-glas.json`). Not yet for records (translucent vinyl takes the colour behind it).
+- **A strip of background along one part of an edge is cut off — only on a coloured sheet.** When a sleeve lay slightly differently in two partial scans, a grey strip of the sheet could fall inside the cut along part of one side. On a coloured sheet the side is now checked in 8 pieces and the worst piece counts (only the colour of the sheet, at most 1 mm). On the white lid the same check is done only where the paper of that piece differs strongly from the lid (dark or saturated print): a thin line of white lid along part of a side is cut off (Fire insert and back, Fake, Queen sleeve front); light print along the edge stays whole.
+- Tried and not kept, after the reference test showed sleeves 1–2 mm smaller: a looser scanner-stretch correction, levelling the tone across seams (`SEAM_LEVEL`, off), cutting a record inward to its worst point, and checking edges in pieces on the white lid regardless of the print colour.
+- Reference test: Urban Solitude green, blue and white on the purple sheet added; GF recorded for the first time.
+
+# 0.5.28 — Scans on a coloured sheet: blank corners, faint print, clean edges; blue vinyl keeps its white label
+
+Found on the first releases scanned with a purple sheet behind them (Urban Solitude green, blue and white, 12 November).
+
+- **A scan without print is no longer left out.** A corner of a sleeve with nothing printed on it had nothing to be matched on and was dropped; the result then said "not scanned". Sleeve now places such a scan on its paper edges (`scan_edges.py`): the edges run straight on from the neighbouring scans, which fixes position and rotation. If the edges are not visible either, the result says which scan was left out and why.
+- **Faint print is used.** When a scan fits nowhere, Sleeve looks again with raised contrast (for matching only). A page with very light lettering is now merged.
+- **The shadow along the edge of each scan is measured, per side** (`shading_widths`): from the scan border to where the colour becomes flat, or to just before a jump (a paper edge). On a coloured sheet that shadow is up to 2 mm wide and was taken for the paper edge; sheets came out 4 to 10 mm too wide with a strip of background.
+- **A sheet with a band of print along its edge is cut on the paper edge.** When two frames lie equally well on edges, the outer one wins, provided it is clearly larger (3 mm or more) and background is scanned outside all four of its sides. A black band along a sheet was cut off before.
+- **White vinyl on a coloured sheet:** the background shines through the thin rim. Sleeve cuts where that tint ends. Only with a coloured background; on the white lid the cut is unchanged.
+- **Blue vinyl no longer gets a blue-green label.** Matching the colour of side A and B divided two near-zero numbers for a colour channel in which the vinyl is black, and multiplied the whole image, label included, by the result. Such a channel is now left alone, and a correction larger than a scanner can explain (15 to 18%) is not applied at all.
+- **Inserts of different sizes in one release** (a 29 cm booklet and a 30 cm sheet) no longer give doubt. Doubt only when two inserts are almost the same size (2.5 to 6 mm apart).
+- **Inside with a single sheet in it** is cut as a sheet, with a note; the error text says to use Insert slots.
+- **Adjust Color:** the record is located in your own photo by its label, and the label (the same paper in scan and photo) is used to match the photo's exposure to the scan. The colour is applied up to the measured edge of the label, so no dark ring remains.
+- Insert size range 288 to 312 mm (was 290).
+
+# 0.5.27 — A part that hangs no longer hangs the app; Discogs fetched once; a fixed reference test
+
+- **No more hanging.** Each part has a time limit (15 minutes plus 1.5 s per megapixel of scans). A part that passes it is stopped with everything it started and reported as `NOT MADE: <part> – stopped after N minutes`; the other parts go on. Filling in the slots and matching the colour of side A and B have a time limit too.
+- **Discogs is fetched once per address and remembered for an hour** (`scan_net.py`), shared by all parts. "Too many requests" (429) or a fault at Discogs is retried after a short wait instead of failing the part. Before, every part asked Discogs three to four times, close to its limit of about 25 requests a minute.
+- **A fault at Discogs no longer throws away a finished cut-out.** If the text of the release cannot be fetched, the part is kept and you get doubt about which way is up, with the reason.
+- **A decision is remade with the same facts.** Rotating or squaring a part in the Final Check now uses the same format, packaging and resolution as the first run (stored in `Studio-verwerking.json`). Before, a slim-jewel or cardboard-sleeve part was remade on jewel-case sizes.
+- **In doubt about which way is up, Sleeve no longer turns the image.** It stays as it was cut out, and your rotation applies to exactly the image you saw. (A label set straight on its title is still shown straightened, and marked as doubt.)
+- **Side letter on the label:** also read as `Side 1`, `A-Side`, `Kant A`, `Seite 2`; words from a title ("Side by side") do not count.
+- **Dark sheet behind a card:** a dark, even sheet behind a CD card is no longer taken for the card or for print.
+- Slots are also filled in from a Discogs master link.
+- **Reference test for the facts route** (`Tests/feiten/reference.py`): approved releases are made again through the bridge and compared part by part (verdict, size in mm, upright angle, a small image print). See `Documentation/TESTS.md`.
+- New: `Documentation/SCANNEN.md`, how to scan so that Sleeve does not have to doubt.
+
+# 0.4.23 — Sleeve in English
+
+- The whole app is now in American English: screens, buttons, messages, progress and the final check, following the approved glossary (release, cover, record, part, Final Check, Process Scans, Adjust Color, Rename Files; parts Front, Back, Inside, Insert, Insert Left/Right, Side A–D, CD, Unassigned).
+- Internal signals between the processing steps are English too and changed on both sides at once (record:, cover:, orientation: unknown, done:, building full resolution:, fits best, name via Discogs failed, warning words, disk-space and incomplete-disc errors).
+- Saved keys stay unchanged, so existing projects and queues still open (work modes keep their stored value and get an English title).
+- File naming conventions (`_kleur`, part names in file names) and internal JSON names are unchanged.
+- The reference set (formerly "gouden set") is now `Tests/reference/reference.py` with English output.
+
+# 0.4.22 — Binnenkant insert_left/insert_right; release-zoeker voor losse titelwoorden
+
+- De twee helften van een uitgeklapte binnenkant heten `insert_left` en `insert_right` (in de app "Inlegvel links" en "Inlegvel rechts"). Is er zo'n binnenkant, dan is "inside" bezet en heten losse tekstvellen `insert` en `insert_2`.
+- Releasevoorstellen: grote losse woorden op de voorkant worden samen gelezen ("PLACES" + "TOGO"), de titel komt uit de trackregel met speelduur als die daarbij past ("Places To Go 3..47", "You &13..54" = "You & I"), en bij promo's met twijfel over de artiest telt de naam uit de credits ("Written by Anouk Teeuwe"). Places To Go en You & I vinden nu de juiste promo; alle 9 promo's in scans_2026 kloppen.
+
+# 0.4.21 — Labelhoek: de rechte tekstregels hebben het laatste woord
+
+- Na het rechtzetten (en na het volgen van een Discogs-foto) meet Sleeve de rechte tekstregels op het label zelf: letters worden tot regels samengevoegd, alleen lange, rechte, gevulde regels tellen (geen tekeningen of ronde randtekst), minstens drie moeten het eens zijn. Wijken ze nog 1,2 graden of meer af (`TEXT_LINE_MIN`), dan wordt dat bijgesteld. Hotel New York kant A stond 1,5 graden scheef: de Discogs-foto die Sleeve volgde, stond zelf scheef.
+
+# 0.4.20 — Uitgeklapte binnenkant als twee vierkanten; doorzichtig vinyl als plaat
+
+- Uitgeklapte binnenkant (twee panelen naast elkaar, in delen gescand): de scans worden één groep, ook als de uiteinden elkaar niet raken (meerdere sterke kwartslag-overlappen; bij een exacte kwartslag volstaan 25 passende punten, `MIN_INLIERS_QUARTER`). Het samengevoegde vlak (≥1,7:1) krijgt een kader van 2:1, en Sleeve slaat dat op als twee vierkanten, precies op de vouw gesplitst (`inside`, `inside_2`). Deena & Jim: kamer en bed, rechtop.
+- Hoes of plaat: is de cirkel bijna even sterk als het vierkant (doorzichtig vinyl op het witte deksel), dan beslist het asgat midden in de cirkel (`centre_hole`). To Get Her Together kant A was als hoes verwerkt.
+
+# 0.4.19 — Tekstvellen niet meer als plaat
+
+- 0.4.18 gaf het ruimere hoeskader de randsteun van de zwakke papierrand. Daarmee won de cirkelzoeker en werden de Deena & Jim-tekstvellen als plaat uitgesneden. Hoes of plaat wordt nu weer beslist op de steun van het sterke vierkant (zoals in 0.4.17); het ruimere kader bepaalt alleen de uitsnede.
+
+# 0.4.18 — Samengevoegde hoezen en vellen niet meer te krap bijgesneden
+
+- Hoeskader: Sleeve zoekt het vierkant dat het best op de randen past. Bij een wit vel op het witte deksel is de papierrand zwak, en kon een gedrukte lijn met een tekstregel een kleiner "vierkant" vormen: Deena & Jim tekstvel verloor links, rechts en boven tekst (27% van het drukwerk viel erbuiten), Hotel New York-voorkant de ANOUK-balk bovenaan. Nu: valt er duidelijk drukwerk (randen in beide richtingen; lijnen en scannerstrepen tellen niet) buiten het kader (`INK_OUTSIDE`), dan neemt Sleeve per zijde de eerste duidelijke rand buiten het drukwerk, en vult de korte zijde aan tot een vierkant.
+- Testset: de wachtrijtest stopt bij drukte netjes (na 120 s) in plaats van te crashen met een macOS-melding "Checks is onverwacht gestopt".
+
+# 0.4.17 — Grote vellen in kwartslag-delen als één geheel
+
+- Groeperen: een tekstvel of inlay dat groter is dan de scanner, scan je in vier delen en draai je steeds een kwartslag. Die delen werden niet samengevoegd. Bij het vergelijken telt nu de scannerrek mee (y/x ~0,9975, draait mee met de kwartslag; bij fijne tekst zakte de gelijkenis daardoor onder de grens), en vier delen gaan samen als álle paren een kwartslag verschillen, ook al overlappen de diagonale delen maar smal (`MERGE_WEAKEST`, `MERGE_STRONGEST`). Beide alleen bij kwartslagen (`QUARTER_TOL`): kant A en B van een plaat liggen in een willekeurige hoek en scoren anders even hoog (Graduated Fool). Deena & Jim: tekstvellen 10–13 en 14–17; To Get Her Together: inlay 9–12 en 13–16.
+- Samenvoegen: elk deel werd via één ander deel geplaatst (opspannende boom); bij vier delen stapelden kleine fouten zich op één naad op (letters ~6 px verschoven). Nu worden alle delen daarna tegelijk bijgesteld over alle overlappen (kleinste kwadraten, `refine_placement`). Alleen als geen paar slechter wordt (`REFINE_SLACK`); paren die volgens de boom ver afwijken, tellen niet mee (`REFINE_MAX_ERROR`).
+
+# 0.4.16 — Release-zoeker voor promo's en labels bij onbekende leesrichting
+
+- Releasevoorstellen: als titel telt nu de tekst die op meerdere delen staat (hoes, achterkant, cd), zonder speelduur ("New Day 3.37" → "New Day"). Copyright-, credit-, UPC- en ISRC-regels tellen niet mee, ook als © als "@" gelezen wordt. Voorheen zocht New Day op "@ 2015 Goldilox, under the exclusive license…", de copyrightregel langs de cd-rand.
+- Artiest: de grootste tekst die op meer dan één deel staat; "& DOUWE BOB" onder de naam hoort erbij. Ondersteboven gelezen tekst met onzinwoorden (">lnONV") verliest het nu van de goede leesrichting.
+- ISRC: Sleeve leest het ISRC-nummer ("ISRC: NL-XA9-15-00003"). Discogs zoekt er niet op, maar staat het bij een gevonden uitgave (ook zonder landcode), dan staat er "ISRC komt overeen" en komt die uitgave bovenaan.
+- Staat er "For promotional use only" of "Not for sale" op, dan gaat een promo-uitgave voor.
+- Labelstand: vindt Sleeve de leesrichting van een label niet, dan wordt de gemeten scheefstand toch rechtgezet; de kwartslag volgt uit de Discogs-foto. Voorheen bleef het label dan scheef (Deena & Jim kant A op 600 dpi: 4,4 graden).
+
+# 0.4.15 — Rechtere labels en minder onterechte meldingen
+
+- Labelstand: de fijnbijstelling op de tekstregels mag tot 8 graden (`LABEL_REFINE`, was 4). Na de leesstand-zoektocht in stappen van 15 graden kan de rest tot 7,5 graden zijn (Deena & Jim kant B stond 6,1 graden scheef, To Get Her Together kant A 4,2).
+- Eindcontrole: geen naadmelding meer bij platen. Groeven en de draaiing tussen deelscans gaven daar vals alarm; het label komt meestal uit één scan.
+- Eindcontrole: een samengevoegde voorkant zonder leesbare tekst kreeg "nakijken", ook als een zeker passende Discogs-foto de stand daarna al had gezet (Graduated Fool, Hotel New York, For Bitter or Worse). Die vlag vervalt nu; zonder passende Discogs-foto blijft hij staan.
+
+# 0.4.14 — Labels met een misleidend ontwerp en minder vals alarm in de eindcontrole
+
+- Labelstand: is het label sterk scheef (de hoekmeting wordt als onwaarschijnlijk afgewezen) of is de leesrichting onduidelijk, dan draait Sleeve het label in stappen van 15 graden rond en kiest de stand met de meeste echte woorden (`reading_sweep`, `SWEEP_MARGIN`). Voor platen zonder Discogs-foto van het vinyl met een schuin logo of strepen (To Get Her Together stond ondersteboven en ~25 graden scheef).
+- Eindcontrole: een verschuiving telt alleen bij een duidelijke match (`QUALITY_RESPONSE` 0,3) en niet als de uitslag tegen de rand van het meetvak ligt. Dat gaf op labels met weinig contrast vals alarm (tot ~130 px).
+
+# 0.4.13 — Kantherkenning, eindcontrole op naden en fijnere labelstand
+
+- Kanten herkennen: ook leesfouten van "SIDE" tellen ("SDEA", "S1DE B"), een schuin label wordt nog eens 15 en 30 graden gedraaid gelezen, en een label met alleen een losse letter (A, B, C, D, zoals Deena & Jim) wordt herkend door losse tekens uit te knippen en vergroot te lezen. Alleen hoofdletters tellen (een omgekeerde 'a' is geen A).
+- Groeperen: scans met dezelfde gelezen kantletter die via overlap verbonden zijn, beginnen samen; een scan zonder leesbare letter komt daarna bij de juiste kant. Daarmee geen kant A en B in één onderdeel meer (Deena & Jim: A, B en C apart; TGHT: Scan 22 bij kant A).
+- Labelstand: na de grove meting een fijnbijstelling op de tekstregels van ±1,5 tot 4 graden (`LABEL_REFINE`); kleiner is ruis van het ontwerp. Vooral voor platen zonder Discogs-foto van het vinyl (Wen d'r maar aan kant B stond 2,7 graden scheef).
+- Eindcontrole: tijdens het samenvoegen telt Sleeve plekken waar een naad door tekst loopt met zichtbaar verschoven deelscans (hoes niet plat). Vanaf 3 plekken staat er een melding bij dat bestand in de eindcontrole. Bij platen zonder passende Discogs-foto van het vinyl meldt de eindcontrole dat de labelstand alleen op de tekst is bepaald.
+
+# 0.4.12 — Rechte labels, schone naden, barcodes en automatische vinylkleur
+
+- Plaatlabels recht: de scheefstand wordt op het label zelf gemeten (1600 px) in plaats van op de hele plaat verkleind tot 1200 px. Een gemeten scheefstand boven 12 graden wordt als meetfout genegeerd (`MAX_LABEL_SKEW`).
+- "Hoes en plaat juist draaien" bij platen: wijkt de Discogs-foto minder dan 6 graden af (`MAX_PHOTO_SKEW`), dan alleen de kwartslag (de foto staat zelf scheef). Wijkt hij meer af, dan volgt Sleeve de foto exact (labels waarop de tekstmeting misleidt, zoals FIRE en Graduated Fool). Een exacte draaiing van een plaat werd voorheen niet uitgevoerd; opgelost.
+- Naden: welke deelscan per plek wordt gebruikt, bepaalt de scherpste scan (met minder gewicht bij de scanrand). Een naadzoeker (graph cut, `SEAM_SIDE` 1200 px) mag de grens alleen binnen een strook van 40 px verleggen (`SEAM_CORRIDOR`), zodat die tussen woorden loopt. Alleen de heel grove toon (`TONE_SIGMA`) wordt tussen deelscans gemengd. Geen dubbele letters (Hotel New York), geen wazige scanranden (Urban Solitude) en geen blokken op goud vinyl (Together Alone).
+- Releasevoorstellen: zo nodig worden alle scans gelezen, tot de eerste bruikbare barcode. Zoeken gaat barcode → catalogusnummer en tekst; logo's die als één woord gelezen worden, worden gesplitst (AnoukUrbanSolitude → Anouk Urban Solitude). Catalogusnummers uit drukwerkregels gaan voor grote losse tekst (TOGETHER ondersteboven → JIH13901); bij een barcode-treffer wordt het catalogusnummer van de uitgave getoond. Elke tekstherkenning heeft een eigen proces (de gedeelde procesvariabele gaf geen voorstellen).
+- Herhaalde voorkant: de grootste is de voorkant; een duidelijk kleiner exemplaar (buitenkant binnenhoes) heet `insert` en wordt ter controle voorgelegd.
+- Automatische vinylkleur: wijkt de gescande plaatkleur af van de kleurnaam op Discogs, dan maakt Sleeve een `_kleur`-voorstel met een Discogs-foto waarvan de tint wél bij die naam past (FIRE: rood → oranje). Originelen blijven behouden; zilver, zwart, clear, marbled en splatter niet automatisch.
+
+# 0.4.11 — Geen rode of grijze gloed meer op samengevoegde hoezen
+
+- Samenvoegen van deelscans: de lichtcorrectie per deelscan gebruikt nu één gedeeld lichtverloop voor alle kleurkanalen, plus per kanaal alleen een vaste kleurzweem. Voorheen kreeg elk kanaal een eigen verloop dat vanuit de overlap over de hele scan werd doorgetrokken; dat gaf op wit papier een rode, roze of grijze gloed die niet op de scans stond.
+- Het lichtverloop per deelscan is begrensd op ongeveer 6% over de hele breedte/hoogte (`MAX_SLOPE`), de vaste kleurzweem per kanaal op ongeveer 4% (`MAX_CAST`). Voorheen liep de correctie per kanaal tot ±15%.
+- Alleen `scan_stitch.py` is gewijzigd. Losse scans, `--geen-kleur`, Discogs-kleur en -stand, uitsnijden en uitvoerresolutie zijn ongewijzigd.
+
 # 0.4.10 — Hoezen met witte randen en losse hoekscans
 
 - Hoesranden: een grote gesloten rechthoek kan een aantoonbaar afwijkende combinatie van scanner- en afbeeldingslijnen vervangen. Eerdere overeenkomende uitsneden blijven behouden.

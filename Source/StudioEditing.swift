@@ -9,6 +9,7 @@ struct StudioScanRecipe:Codable {
     var useNames:Bool
     var useStand:Bool
     var useColour:Bool
+    var labelExpandMM:Int? = nil
 }
 struct StudioEditingSession {
     var workspace:WorkspaceSnapshot
@@ -37,14 +38,14 @@ extension StudioModel {
     func scanSettings(for item:MediaItem)->WorkspaceSnapshot {
         guard let run=originalScanRun(for:item) else {return captureWorkspace()}
         var value=run.workspace
-        if let recipe=run.scanRecipe {value.inputs=recipe.inputs;value.discogs=recipe.discogs;value.variant=recipe.variant;value.useNames=recipe.useNames;value.useStand=recipe.useStand;value.useColour=recipe.useColour}
+        if let recipe=run.scanRecipe {value.inputs=recipe.inputs;value.discogs=recipe.discogs;value.variant=recipe.variant;value.useNames=recipe.useNames;value.useStand=recipe.useStand;value.useColour=recipe.useColour;value.enlargeLabel=(recipe.labelExpandMM ?? 0)==1}
         return value
     }
     func prepareEditing(_ item:MediaItem,retry:Bool)->Bool {
         guard !busy,!queueRunning,activeQueueID==nil else{return false}
         if outputFolder==nil{chooseOutput();guard outputFolder != nil else{return false}}
         // Preserve the initial result too, including an imported image with no run history.
-        runs.append(StudioRun(label:"Vorige versie · "+partLabel(item.part),success:true,workspace:captureWorkspace(),action:"snapshot"))
+        runs.append(StudioRun(label:"Previous version · "+partLabel(item.part),success:true,workspace:captureWorkspace(),action:"snapshot"))
         editingSession=StudioEditingSession(workspace:captureWorkspace(),target:item,retry:retry)
         lastEditingWasRetry=retry;panel=nil
         return true
@@ -54,10 +55,10 @@ extension StudioModel {
         launch(action:"manualCrop",rowsOverride:[MediaItem(url:source,part:part)],extra:["sourceSignature":signature,"cropX":x,"cropY":y,"cropDiameter":diameter,"cropPart":part])
         if !busy && editingSession != nil {finishEditing(success:false);lastEditingWasRetry=false}
     }
-    func retryPart(target:MediaItem,sources:[MediaItem],settings:WorkspaceSnapshot) {
+    func retryPart(target:MediaItem,sources:[MediaItem],settings:WorkspaceSnapshot,seamLevel:Bool=false,levelVinyl:Bool=false) {
         guard !sources.isEmpty,prepareEditing(target,retry:true) else{return}
         let rows=sources.map{MediaItem(url:$0.url,part:target.part)}
-        launch(action:"scan",rowsOverride:rows,extra:["rerunPart":target.part,"discogs":settings.discogs,"variant":settings.variant,"useNames":settings.useNames,"useStand":settings.useStand,"useColour":settings.useColour])
+        launch(action:"scan",rowsOverride:rows,extra:["rerunPart":target.part,"discogs":settings.discogs,"variant":settings.variant,"useNames":settings.useNames,"useStand":settings.useStand,"useColour":settings.useColour,"seamLevel":seamLevel,"levelVinyl":levelVinyl])
         if !busy && editingSession != nil {finishEditing(success:false);lastEditingWasRetry=false}
     }
     @discardableResult func finishEditing(success:Bool)->Bool {

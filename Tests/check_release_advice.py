@@ -1,3 +1,4 @@
+import shutil
 """Release suggestions: identifiers, ambiguous pressings, network failure, old scan settings."""
 from pathlib import Path
 from unittest.mock import patch
@@ -19,7 +20,7 @@ req={'recognize':False,'artist':'Anouk','title':'Set This Thing On Fire','barcod
 advice=A.advice(req,[],get=get)
 assert [r['id'] for r in advice['candidates']]==[33644769,33664818]
 assert advice['candidates'][1]['variant']=='Orange'
-assert all('Barcode komt overeen' in r['reasons'] for r in advice['candidates'])
+assert all('Barcode matches' in r['reasons'] for r in advice['candidates'])
 assert len([u for u in calls if '/database/search?' in u])==1
 assert 'artist=' not in calls[0] and 'token' not in calls[0]
 # Unknown/no text never searches vaguely or invents a release.
@@ -33,8 +34,29 @@ with patch.object(A,'recognize',return_value=dict(h,artist='bad OCR',title='wron
  assert recognized['hints']['artist']=='Anouk'
  assert recognized['hints']['title']=='Set This Thing On Fire'
  assert not any('bad+OCR' in u or 'wrong+song' in u for u in calls)
-def offline(url):raise RuntimeError('Geen verbinding met Discogs.')
-failed=A.advice(req,[],get=offline);assert not failed['candidates'] and 'Geen verbinding' in failed['message']
+# Promo (New Day): copyright langs de cd-rand is groter dan de titel; de titel staat op
+# meerdere delen, met speelduur. ISRC bevestigt een uitgave, ook zonder landcode.
+line=lambda text,height:{'text':text,'confidence':.9,'height':height,'rotation':0}
+docs=[{'lines':[line('ANOUK',.07),line('NEW DAY',.02)]},
+      {'lines':[line('ANOUK',.05),line('New Day 3.37',.03),line('ISRC: NL-XA9-15-00002',.01),line('For promotional use only - NOT FOR SALE',.02)]},
+      {'lines':[line('ANOUK',.06),line('@ 2015 Goldilox, under the exclusive licen* to Universal Music BV',.09),line('New Day 3:37',.02)]}]
+h=A.extract_hints(docs)
+assert (h['artist'],h['title'],h['isrc'],h['promo'])==('ANOUK','New Day',['NLXA91500002'],True),h
+def promo_get(url):
+ if '/database/search?' in url:return {'results':[{'id':2,'title':'Anouk - New Day','format':['File','AAC']},{'id':3,'title':'Anouk - New Day','format':['CDr','Promo']}]}
+ return {'identifiers':[{'type':'ISRC','value':'XA9-15-00002'}]} if url.endswith('/3') else {}
+found,_=A.search(h,'',promo_get)
+assert found[0]['id']==3 and 'ISRC matches' in found[0]['reasons'] and 'ISRC matches' not in found[1]['reasons']
+# Big words on the front read as separate lines ("PLACES" "TOGO", "You" "&I"); the
+# track line with its duration gives the real title; the artist comes from the credits.
+places=[{'lines':[line('PLACES',.18),line('TOGO',.18),line('nou',.11)]},
+        {'lines':[line('ANOUK',.14),line('Places To Go 3..47',.03),line('lyrics by Anouk Teeuwe',.02),line("Eerste single of Anouk's nieuwe album",.02),line('For promotional use only - NOT FOR SALE',.02)]}]
+h=A.extract_hints(places);assert (h['artist'],h['title'])==('ANOUK','Places To Go'),h
+you=[{'lines':[line('You',.30),line('&I',.29)]},
+     {'lines':[line('You &13..54',.03),line('Written by Anouk Teeuwe and N. Van De Wall',.02),line('Produced by Anouk Teeuwe',.02),line('For promotional use only - NOT FOR SALE',.02)]}]
+h=A.extract_hints(you);assert (h['artist'],h['title'])==('Anouk','You & I'),h
+def offline(url):raise RuntimeError('No connection to Discogs.')
+failed=A.advice(req,[],get=offline);assert not failed['candidates'] and 'No connection' in failed['message']
 # A usable barcode stops recognition without decoding the rest of the batch.
 seen=[]
 def runner(command):
@@ -46,17 +68,14 @@ calls.clear();A.search({'artist':'Anouk','title':'Fake It Till We Die'},'Vinyl',
 assert urllib.parse.parse_qs(urllib.parse.urlparse(calls[0]).query)['format']==['Vinyl']
 rows=[{'path':str(i),'part':'front','reference':i==0} for i in range(30)]
 chosen=A.sample_rows(rows);assert len(chosen)==6 and rows[0] not in chosen and rows[-1] in chosen
-# A legacy project/queue with useColour=true must never colour-correct during scans.
+# Feitenroute: zonder vakken gokt Sleeve de indeling niet, maar vraagt erom.
 sys.path.insert(0,str(root/'Resources'));import studio_bridge as B
-class Captured(Exception):pass
-captured=[]
-def fake_run(command):captured.extend(map(str,command));raise Captured()
 with tempfile.TemporaryDirectory(dir=work) as folder:
  folder=Path(folder);output=folder/'output';output.mkdir();staging=folder/'work';staging.mkdir()
- sample=root/'Resources/Samples/Voorbeeld_sidea.png'
- with patch.object(B,'run',side_effect=fake_run):
-  try:B.scan({'output':str(output),'discogs':'https://www.discogs.com/release/33664818','useNames':False,'useStand':False,'useColour':True},[{'path':str(sample),'part':'sidea'}],staging)
-  except Captured:pass
- assert captured and '--discogs-kleur' not in captured
-checks={'barcode_checksum_and_upc_ean_equivalence':True,'distinct_pressings_need_user_choice':True,'orange_variant_shown':True,'no_upload_of_images_or_raw_text':True,'offline_and_no_text_handled':True,'format_filter_and_bounded_sampling':True,'legacy_scan_colour_disabled':True}
+ # naam zonder onderdeel (Voorbeeld_sidea.png zou als 'sidea' herkend worden: dat is een feit)
+ sample=folder/'Voorbeeld.png';shutil.copy(root/'Resources/Samples/Voorbeeld_sidea.png',sample)
+ try:
+  B.scan({'output':str(output),'discogs':'https://www.discogs.com/release/33664818','useColour':True},[{'path':str(sample),'part':'sidea'}],staging);raise AssertionError('scan without slots must refuse')
+ except ValueError as e:assert 'slots' in str(e)
+checks={'barcode_checksum_and_upc_ean_equivalence':True,'distinct_pressings_need_user_choice':True,'orange_variant_shown':True,'no_upload_of_images_or_raw_text':True,'offline_and_no_text_handled':True,'format_filter_and_bounded_sampling':True,'legacy_scan_colour_disabled':True,'promo_title_isrc':True,'split_title_and_credit_artist':True}
 (work/'RESULTAAT.json').write_text(json.dumps(checks,indent=2));print(checks)

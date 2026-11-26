@@ -44,11 +44,24 @@ class GainPlane:
         return result
 
 
+class FieldGain:
+    """Lichtvlak van een deelscan met daarbovenop een glad toonveld (één factor per plek, voor alle
+    kanalen), op de rekenschaal van het samengevoegde beeld."""
+    def __init__(self, plane, field):
+        self.plane = plane
+        self.field = field                                   # (hoogte, breedte) float16, factor rond 1
+
+    def rows(self, start, stop):
+        base = self.plane.rows(start, stop) if self.plane is not None else np.ones((stop-start, self.field.shape[1], 3), np.float32)
+        return base * self.field[start:stop, :, None].astype(np.float32)
+
+
 class CorrectedImage:
     def __init__(self, raw):
         self.raw = raw
         self.shape = raw.shape
         self.gain = None
+        self.white_anchor = None
 
     def __getitem__(self, rows):
         start, stop, step = rows.indices(self.shape[0])
@@ -57,4 +70,7 @@ class CorrectedImage:
         result = self.raw[start:stop].astype(np.float32)
         if self.gain is not None:
             result *= self.gain.rows(start, stop)
+            if self.white_anchor is not None:
+                from scan_paper_light import preserve_white
+                result = preserve_white(self.raw[start:stop], result, self.white_anchor)
         return result

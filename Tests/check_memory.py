@@ -33,9 +33,39 @@ with patch('scan_memory.shutil.disk_usage',return_value=SimpleNamespace(free=20*
  assert not failed.maps and not failed.arrays
 with patch('scan_memory.shutil.disk_usage',return_value=SimpleNamespace(free=0)):
  try:MappedScanStore(paths,[0],loader,scratch=root);raise AssertionError('Expected space check')
- except ValueError as error:assert 'schijfruimte' in str(error)
+ except ValueError as error:assert 'disk space' in str(error)
 with patch('scan_memory.physical_memory',return_value=8*GiB):assert render_tile_size()==1024
 with patch('scan_memory.physical_memory',return_value=16*GiB):assert render_tile_size()==2048
+# Total source pixels are not simultaneous decoder memory. Five A4 scans at
+# 1200 dpi exceed 700 Mpx but fit the actual sequential decoder and disk guards.
+class Header:
+ width,height=10176,14016
+ def __enter__(self):return self
+ def __exit__(self,*args):pass
+ def close(self):pass
+with patch('scan_memory.Image.open',return_value=Header()), \
+     patch('scan_memory.physical_memory',return_value=8*GiB), \
+     patch('scan_memory.shutil.disk_usage',return_value=SimpleNamespace(free=100*GiB)):
+ large=MappedScanStore(['source']*5,range(5),loader,scratch=root)
+ assert len(large.shapes)==5
+ Header.width=Header.height=50000
+ try:MappedScanStore(['source'],[0],loader,scratch=root);raise AssertionError('Expected decoder memory check')
+ except ValueError as error:assert 'too large to open safely' in str(error)
+ Header.width,Header.height=10176,14016
+with patch('scan_memory.Image.open',return_value=Header()), \
+     patch('scan_memory.physical_memory',return_value=8*GiB), \
+     patch('scan_memory.shutil.disk_usage',return_value=SimpleNamespace(free=2*GiB)):
+ try:MappedScanStore(['source']*5,range(5),loader,scratch=root);raise AssertionError('Expected real scratch-space check')
+ except ValueError as error:assert 'disk space' in str(error)
+# Removing a total-native-pixel cap must not silently cap the memory estimate
+# and then decode an arbitrarily large number of previews.
+import scan_stitch
+with patch('PIL.Image.open',return_value=Header()), \
+     patch.object(sys,'argv',['scan_stitch','unused.png']+['source']*100+['--toon-format','vinyl']), \
+     patch('scan_stitch.load',side_effect=AssertionError('Must refuse before decoding')), \
+     patch.dict('os.environ',{'SLEEVE_MEMORY_SLOTS':'72'}):
+ try:scan_stitch.main();raise AssertionError('Expected preparation budget check')
+ except ValueError as error:assert 'available memory' in str(error)
 with MappedArrayStore(4096,scratch=root) as work:
  value=np.arange(90,dtype=np.float32).reshape(10,9)
  stored=work.put('image',value)
@@ -50,6 +80,6 @@ with MappedArrayStore(4096,scratch=root) as work:
 assert not work.maps and not work.arrays
 with patch('scan_memory.shutil.disk_usage',return_value=SimpleNamespace(free=0)):
  try:MappedArrayStore(4096,scratch=root);raise AssertionError('Expected space check')
- except ValueError as error:assert 'schijfruimte' in str(error)
-checks={'work_buffers_preserve_pixels_and_cleanup':True,'source_pixels_exact' :True,'decode_once_per_source':True,'scratch_is_anonymous_and_closed':True,'failure_closes_scratch':True,'insufficient_space_rejected':True,'tile_size_matches_memory_budget':True}
+ except ValueError as error:assert 'disk space' in str(error)
+checks={'work_buffers_preserve_pixels_and_cleanup':True,'source_pixels_exact' :True,'decode_once_per_source':True,'scratch_is_anonymous_and_closed':True,'failure_closes_scratch':True,'insufficient_space_rejected':True,'tile_size_matches_memory_budget':True,'large_group_checked_against_real_resources':True,'oversized_single_source_rejected':True}
 (root/'RESULTAAT.json').write_text(json.dumps(checks,indent=2));print(checks)

@@ -4,15 +4,17 @@ import CryptoKit
 
 @main struct ProjectQueueChecks {
     @MainActor static func waitForIdle(_ model:StudioModel) async throws {
-        let deadline=Date().addingTimeInterval(45)
+        // Ruim: tijdens een zware verwerking ernaast duurt het langer. Bij een
+        // time-out netjes stoppen (exit 1), geen crash met macOS-meldvenster.
+        let deadline=Date().addingTimeInterval(120)
         while model.busy || model.queueRunning {
-            if Date()>deadline {model.cancel();fatalError("Wachtrij-test liep vast")}
+            if Date()>deadline {model.cancel();fputs("Wachtrij-test liep vast\n",stderr);exit(1)}
             try await Task.sleep(nanoseconds:50_000_000)
         }
     }
     @MainActor static func main() async throws {
         let root=URL(fileURLWithPath:CommandLine.arguments[1]);try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
-        let library=root.appendingPathComponent("Library");let out=root.appendingPathComponent("Resultaten");try FileManager.default.createDirectory(at:out,withIntermediateDirectories:true)
+        let library=root.appendingPathComponent("Library");let out=root.appendingPathComponent("Results");try FileManager.default.createDirectory(at:out,withIntermediateDirectories:true)
         let sample=root.appendingPathComponent("source_sidea.png")
         try FileManager.default.copyItem(at:Bundle.main.resourceURL!.appendingPathComponent("Samples/Voorbeeld_sidea.png"),to:sample)
         let originalRef=root.appendingPathComponent("Tijdelijke-referentie.png")
@@ -53,7 +55,7 @@ import CryptoKit
         precondition(!m.queue[0].project.workspace.reviewComplete,"Wachtrij toont oude goedkeuring")
         reopened.auditCurrentResults();try await waitForIdle(reopened)
         precondition(reopened.reviews[result.url.path]?.audit?.readable==true && reopened.reviewCount==0,"Opnieuw controleren neemt oude goedkeuring over")
-        reopened.exportReview();let exported=try FileManager.default.contentsOfDirectory(atPath:result.url.deletingLastPathComponent().path);precondition(exported.contains{$0.hasPrefix("Eindcontrole-")})
+        reopened.exportReview();let exported=try FileManager.default.contentsOfDirectory(atPath:result.url.deletingLastPathComponent().path);precondition(exported.contains{$0.hasPrefix("Final-check-")})
         m.queue=[];m.newEdition();m.mode = .colour;m.inputs=[MediaItem(url:root.appendingPathComponent("ontbreekt.png"),part:"sidea")];m.selectedID=m.inputs[0].id;m.resetColourSelection();m.referenceURL=retained;m.outputFolder=out;m.editionTitle="Opzettelijk ontbrekende bron";m.enqueueCurrent()
         m.newEdition();m.mode = .colour;m.inputs=[MediaItem(url:sample,part:"sidea")];m.selectedID=m.inputs[0].id;m.resetColourSelection();m.referenceURL=retained;m.outputFolder=out;m.editionTitle="Wachten na fout";m.enqueueCurrent();m.startQueue();try await waitForIdle(m)
         precondition(m.queue[0].state == .failed && m.queue[1].state == .waiting && !m.queueRunning,"Fout stopt de wachtrij niet")
