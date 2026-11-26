@@ -189,6 +189,38 @@ def persistent_material_boundary(image, cx, cy, radius, px_mm):
     return result
 
 
+def _texture_edge(image, cx, cy, radius, px_mm, n=720):
+    """Second, independent fact for the paper edge: where the fine texture changes.
+
+    Paper is smooth along the circumference; pressed grooves and vinyl are not (or
+    the other way round). Per direction: texture level well inside the label and
+    well outside it, the edge is the first radius from where the texture stays at
+    the outside level over 0.8 mm. Only directions with a clear texture contrast
+    (one level at least twice the other) give a radius; the rest stay NaN.
+    """
+    p = float(px_mm); up = 4
+    off = np.arange(-3*p, 4*p, .5)
+    ang = np.linspace(0, 2*np.pi, n*up, endpoint=False)[:, None]
+    x = (cx+np.cos(ang)*(radius+off)[None]).astype(np.float32)
+    y = (cy+np.sin(ang)*(radius+off)[None]).astype(np.float32)
+    valid = ((x >= 1) & (y >= 1) & (x < image.shape[1]-2) & (y < image.shape[0]-2)).reshape(n, up, -1).all(1)
+    gray = cv2.cvtColor(cv2.remap(image, x, y, cv2.INTER_LINEAR), cv2.COLOR_BGR2GRAY).astype(np.float32)
+    texture = cv2.blur(np.abs(np.roll(gray, -1, axis=0)-gray), (max(3, int(.3*p/.5)), 4)).reshape(n, up, -1).mean(1)
+    span = max(3, int(.8*p/.5)); edge = np.full(n, np.nan)
+    for k in range(n):
+        inner = texture[k, valid[k] & (off < -1.5*p)]; outer = texture[k, valid[k] & (off > 2*p)]
+        if len(inner) < 3 or len(outer) < 3:
+            continue
+        a, b = float(np.median(inner)), float(np.median(outer))
+        if max(a, b) < 2*min(a, b) or max(a, b) - min(a, b) < 1:
+            continue
+        outside_like = np.abs(texture[k]-b) < np.abs(texture[k]-a)
+        for i in range(len(off)-span):
+            if valid[k, i] and np.all(outside_like[i:i+span] | ~valid[k, i:i+span]):
+                edge[k] = radius+off[i]; break
+    return edge
+
+
 def _persistent_material_boundary(image, cx, cy, radius, px_mm, refine=False):
     """Locate a lasting departure from local paper, not a line returning to it.
 
@@ -224,6 +256,16 @@ def _persistent_material_boundary(image, cx, cy, radius, px_mm, refine=False):
     supported = ok.any(1)
     if supported.mean() < .8:
         return None
+    # Sleeve 0.5.50: in de verfijnde poging mag een tweede, onafhankelijk feit (de structuurrand) een richting bevestigen
+    # waar de kleur dat niet kon: label en vinyl bijna dezelfde kleur (Paradise And Back Again 2022 oranje, losse labelscans:
+    # kleur 78% van de omtrek). Alleen als die structuurrand binnen 0,35 mm van de kleurellips ligt; de ellips zelf komt
+    # alleen uit kleurpunten. Geslaagde metingen veranderen niet: dit opent alleen poorten die eerst sloten.
+    texture = _texture_edge(image, cx, cy, radius, p) if refine else None
+    def texture_near(limit):
+        tx, ty = cx+np.cos(angles[:, 0])*texture, cy+np.sin(angles[:, 0])*texture
+        th = np.deg2rad(deg); ddx, ddy = tx-ex, ty-ey
+        res = np.abs(np.hypot((ddx*np.cos(th)+ddy*np.sin(th))/(da/2), (-ddx*np.sin(th)+ddy*np.cos(th))/(db/2))-1)*min(da,db)/2
+        return np.isfinite(texture) & (np.nan_to_num(res, nan=1e9) < limit)
     index = ok.argmax(1)
     points = np.c_[x[np.arange(720),index],y[np.arange(720),index]].astype(np.float32)
     keep = supported.copy()
@@ -232,8 +274,11 @@ def _persistent_material_boundary(image, cx, cy, radius, px_mm, refine=False):
         theta = np.deg2rad(deg); d = points-[ex,ey]
         error = np.abs(np.hypot((d[:,0]*np.cos(theta)+d[:,1]*np.sin(theta))/(da/2),
                                (-d[:,0]*np.sin(theta)+d[:,1]*np.cos(theta))/(db/2))-1)*min(da,db)/2
-        new = supported & (error < .35*p)
-        if new.mean() < .8:
+        # Verfijnde poging: de rand wordt hierna opnieuw gemeten binnen 0,7 mm van deze consensus; dezelfde 80%-eis op
+        # 0,35 mm liet hem nooit beginnen (Queen For A Day 2021, losse labelscans: 77-78% door lichte papiervezel en
+        # schaduwlijn langs de rand). Alle eisen van de herhaalde meting blijven gelden.
+        new = supported & (error < (2*.35*p if refine else .35*p))
+        if (new | texture_near(.35*p) if refine else new).mean() < .8:
             return None
         if np.array_equal(new,keep):
             break
@@ -249,7 +294,12 @@ def _persistent_material_boundary(image, cx, cy, radius, px_mm, refine=False):
         # A real boundary moves towards the observed outside material. An ink
         # stroke ending inside paper can remain unlike the inner printed colour,
         # but moves away from that outside material and must not seed the mask.
-        outside = np.median(samples[:, -span:], axis=1)
+        # De buitenkleur alleen uit meetpunten binnen de scan: buiten het beeld vult remap met zwart. Bij een strak
+        # gesneden losse labelscan (Queen 2021: 29-43% van de richtingen) wees 'richting buitenkleur' dan de verkeerde
+        # kant op (zwart label -> wit vinyl gaat van zwart af) en werd een echte rand geweigerd.
+        far = valid & (distances[None, :] >= radius + 1.5*p)
+        outside = np.array([np.median(samples[k, far[k]][-span:], axis=0) if far[k].sum() >= 3
+                            else np.median(samples[k, -span:], axis=0) for k in range(len(samples))], np.float32)
         approach = np.zeros(samples.shape[:2], np.float32)
         approach[:, jump:-jump] = (np.linalg.norm(samples[:, :-2*jump]-outside[:, None], axis=2)
                                   - np.linalg.norm(samples[:, 2*jump:]-outside[:, None], axis=2))
@@ -265,7 +315,7 @@ def _persistent_material_boundary(image, cx, cy, radius, px_mm, refine=False):
             candidates = persistent & (residual <= 2*.35*p) & (gradient >= 14) & (approach >= 8)
             index = np.where(candidates, gradient, -1).argmax(1)
             available = candidates.any(1)
-            if available.mean() < .8:
+            if (available | texture_near(2*.35*p)).mean() < .8:     # zelfde poort als de kleurzoektocht: 0,7 mm
                 return None
             points = np.c_[x[ids,index], y[ids,index]].astype(np.float32)
             (ex,ey),(da,db),deg = cv2.fitEllipse(points[available])
@@ -273,6 +323,8 @@ def _persistent_material_boundary(image, cx, cy, radius, px_mm, refine=False):
             error = np.abs(np.hypot((diff[:,0]*np.cos(theta)+diff[:,1]*np.sin(theta))/(da/2),
                                    (-diff[:,0]*np.sin(theta)+diff[:,1]*np.cos(theta))/(db/2))-1)*min(da,db)/2
             keep = available & (error < .35*p)
+        if keep.mean() < .8:
+            keep = keep | texture_near(.35*p)
         if keep.mean() < .8:
             return None
     sectors = keep.reshape(12,60).mean(1)

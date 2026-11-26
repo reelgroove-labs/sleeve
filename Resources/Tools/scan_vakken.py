@@ -362,6 +362,31 @@ def extent_mm(g, feats):
     return float((P[:, 0].max() - P[:, 0].min()) / PXMM), float((P[:, 1].max() - P[:, 1].min()) / PXMM)
 
 
+def sheet_extent(g, feats):
+    """Zoals extent_mm, maar elke scan op zijn plek via zijn STERKSTE overlap met een al geplaatste scan (een zwakke
+    overlap van een bijna leeg stuk papier mag de maat niet bepalen). None als niet alles te plaatsen is."""
+    T = {g[0]: np.eye(3)}; todo = list(g[1:])
+    while todo:
+        best = None
+        for s in todo:
+            for x in T:
+                n = link(feats[s], feats[x])[0]
+                M = LINKS.get((id(feats[s]), id(feats[x])))
+                if n >= MIN_LINK and M is not None and (best is None or n > best[0]):
+                    best = (n, s, x, M)
+        if best is None:
+            return None
+        _, s, x, M = best
+        T[s] = T[x] @ np.vstack([M, [0, 0, 1]]); todo.remove(s)
+    pts = []
+    for s, t in T.items():
+        h, w = feats[s][2]
+        c = np.array([[0, 0, 1], [w, 0, 1], [w, h, 1], [0, h, 1]], np.float64).T
+        pts.append((t @ c)[:2].T)
+    P = np.vstack(pts)
+    return float((P[:, 0].max() - P[:, 0].min()) / PXMM), float((P[:, 1].max() - P[:, 1].min()) / PXMM)
+
+
 def sticker_on(path):
     with tempfile.TemporaryDirectory() as work:
         return bool(is_sticker(path, work))
@@ -521,6 +546,36 @@ def is_sticker(scan, work):
     return 'a small card with rounded corners (a sticker)'
 
 
+def shape_in_print(scan, others, work):
+    """Feit: staat de gevonden kleine vorm (scan_sticker) ook op een andere scan van dezelfde stapel, dan is hij deel
+    van het drukwerk van de hoes, geen sticker erop. Vergelijken op 2 px/mm, binnen de afgeronde hoeken, in vier
+    standen (een hoes wordt halverwege een halve slag gedraaid). Drukwerk: 0,91-0,98; sticker op de folie: 0,23-0,25."""
+    out = os.path.join(work, 'shape_probe.png')
+    try:
+        r = subprocess.run([sys.executable, os.path.join(HERE, 'scan_sticker.py'), scan, '--out', out], capture_output=True, text=True, timeout=180)
+        res = json.loads(r.stdout.strip().splitlines()[-1]); crop = cv2.imread(out)
+    except (ValueError, IndexError, subprocess.TimeoutExpired, OSError):
+        return False
+    dpi = res.get('dpi') or scan_dpi.read(scan)
+    if crop is None or not dpi:
+        return False
+    f = PXMM * 25.4 / dpi
+    c = cv2.cvtColor(cv2.resize(crop, None, fx=f, fy=f, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
+    m = max(4, int(.15 * min(c.shape))); c = c[m:-m, m:-m]
+    if min(c.shape) < 8:
+        return False
+    for t in others:
+        sm = small(t, work)
+        if sm is None:
+            continue
+        g = cv2.cvtColor(sm, cv2.COLOR_BGR2GRAY)
+        for k in range(4):
+            q = np.ascontiguousarray(np.rot90(c, k))
+            if q.shape[0] <= g.shape[0] and q.shape[1] <= g.shape[1] and float(cv2.matchTemplate(g, q, cv2.TM_CCOEFF_NORMED).max()) >= .6:
+                return True
+    return False
+
+
 def card_size(scan, work):
     """Maat (mm) van het kaartje op één cd-scan, gemeten zoals bij het uitsnijden (scan_feiten, als achterkaart
     van een jewelcase: 136-154 x 114-120 mm). Geeft (breedte, hoogte) of None als zo'n kaart er niet in ligt."""
@@ -592,6 +647,24 @@ def stacks(scans, feats, discs):
             groups.append([s]); strengths.append([])
         else:
             g.append(s); strengths[-1].append(best)
+    # Sleeve 0.5.51 - feit: een vel waarvan één stuk bijna leeg is (Urban Solitude 2025 crystal clear, achterkant 0007:
+    # crème papier, 7-10 punten met de scans ervoor) begon een nieuwe stapel, terwijl de scans daarna (0008, 0009) wél
+    # duidelijk op de eerste stukken passen (53-82 punten, een andere plek op het vel). Twee opeenvolgende stapels die elk
+    # nog geen hele hoes zijn, horen bij elkaar als een scan van de tweede echt overlapt met de eerste (minstens MIN_LINK
+    # punten, minstens WEAK x de mediaan binnen die stapels) en ze samen precies één vel bedekken (305-470 mm beide kanten).
+    merged = [groups[0]] if groups else []
+    for g in groups[1:]:
+        a = merged[-1]
+        if all(feats.get(x) for x in a + g) and not complete(a, feats) and not complete(g, feats):
+            cross = max(link(feats[y], feats[x])[0] for y in g for x in a)
+            inside = [link(feats[y], feats[x])[0] for h in (a, g) for i, y in enumerate(h) for x in h[:i]]
+            e = sheet_extent(a + g, feats)
+            if (cross >= MIN_LINK and (not inside or cross >= WEAK * statistics.median(inside))
+                    and e is not None and 305 <= min(e) and max(e) <= 470):
+                merged[-1] = a + g
+                continue
+        merged.append(g)
+    groups = merged
     # Feit: twee pagina's met dezelfde opmaak (kolommen, cijfers) delen wat punten, maar veel minder dan de
     # twee scans van één pagina onderling (US boekje x0003-4 en x0005-6: 1254 en 1402 binnen, hooguit 50
     # ertussen = 4%). Eén pagina in vier stukken deelt tussen de helften veel meer (GF gezicht: 100 en 338
@@ -669,6 +742,40 @@ def label_side(path, circle):
     if not crop.size:
         return None
     f = 2000 / max(crop.shape[:2]); crop = cv2.resize(crop, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+    strong, letters = _read_label_sides(crop)
+    if not strong and _LAST_READ_TIMED_OUT and _warm_up_text_recognition():
+        # Feit (For Bitter Or Worse 2009, Scan 16): de eerste labelscan viel in de koude start van het nauwkeurige lezen
+        # (60 s; daarna 3,7 s per scan); de standen die op 30 s afbraken lazen niets, en het label bleef bij de verkeerde
+        # kant liggen. Na het opwarmen nog één keer lezen.
+        strong, letters = _read_label_sides(crop)
+    got = set(strong) or {sd for sd, n in letters.items() if n >= 2}
+    return got.pop() if len(got) == 1 else None
+
+
+_LAST_READ_TIMED_OUT = False
+_WARMED = False
+
+
+def _warm_up_text_recognition():
+    """Het nauwkeurige lezen van macOS eenmalig laten opstarten (koud tot ±100 s). True als het daarna werkt."""
+    global _WARMED
+    if _WARMED:
+        return False                                       # al opgewarmd: opnieuw lezen helpt dan niet
+    _WARMED = True
+    img = np.full((80, 400, 3), 255, np.uint8); cv2.putText(img, 'SIDE A', (10, 55), 0, 1.2, (0, 0, 0), 2)
+    with tempfile.TemporaryDirectory() as td:
+        pth = os.path.join(td, 'w.png'); cv2.imwrite(pth, img)
+        try:
+            subprocess.run([OCR, pth, '--boxes'], capture_output=True, text=True, timeout=180)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+    return True
+
+
+def _read_label_sides(crop):
+    """De kantaanduiding op een label, gelezen in 8 standen. Geeft (sterke treffers, losse letters) per kant."""
+    global _LAST_READ_TIMED_OUT
+    _LAST_READ_TIMED_OUT = False
     strong, letters = {}, {}
     with tempfile.TemporaryDirectory() as td:
         for ang in range(0, 360, 45):
@@ -677,7 +784,10 @@ def label_side(path, circle):
             pth = os.path.join(td, 'v.png'); cv2.imwrite(pth, v)
             try:
                 out = subprocess.run([OCR, pth, '--boxes'], capture_output=True, text=True, timeout=30).stdout
-            except (OSError, subprocess.TimeoutExpired):
+            except subprocess.TimeoutExpired:
+                _LAST_READ_TIMED_OUT = True
+                continue
+            except OSError:
                 continue
             for row in out.splitlines():
                 parts = row.split('\t')
@@ -692,8 +802,7 @@ def label_side(path, circle):
                 m = re.fullmatch(r'[\-–—~•·]?\s*([ABCD])\s*[\-–—~•·]?', t)
                 if m:
                     side = 'side' + m[1].lower(); letters[side] = letters.get(side, 0) + 1
-    got = set(strong) or {sd for sd, n in letters.items() if n >= 2}
-    return got.pop() if len(got) == 1 else None
+    return strong, letters
 
 
 def small_sticker(path, mm, work):
@@ -823,6 +932,9 @@ def place_label_scans(named, label_scans, feats, expected_sides=None):
         side = read[s] if read[s] in sides else None
         how = f'its label reads SIDE {side[-1].upper()}' if side else None
         if side is None and cur is not None and cur[0] in SIDES:
+            # ligt al bij een kant, maar de kant op het label is niet gelezen: laten liggen, wel zeggen (A en B lijken
+            # vaak op elkaar, dus de overlap alleen bewijst de kant niet)
+            cur[2] += f'; {os.path.basename(s)} is a separate scan of a label whose side could not be read: left here, check it'
             continue
         if side is None and feats.get(s):
             best = max(((link(feats[s], feats[r])[0], sd) for r, sd in record if feats.get(r)), default=(0, None))
@@ -1166,6 +1278,10 @@ def main():
                             why_ = is_sticker(s_, work3)
                             if why_:
                                 hits.append((x, s_, why_))
+                if len(hits) > 1:
+                    # Sleeve 0.5.51: een vorm met afgeronde hoeken in het drukwerk (een tegel op de foto, Together Alone
+                    # 2016 zwart 0002) staat ook op de andere scans van die stapel; een sticker op de krimpfolie (0001) niet.
+                    hits = [h for h in hits if not shape_in_print(h[1], [t for t in h[0][1] if t != h[1]], work3)]
                 if len(hits) == 1:
                     x, s_, why_ = hits[0]
                     rest = [t for t in x[1] if t != s_]
@@ -1198,6 +1314,20 @@ def main():
                                         for t in x[1] for u in inside_scans):
                     continue
                 x[0], x[2] = 'insert', 'front and back are found and this is another sheet: an insert'
+    # Sleeve 0.5.51 - feit: zonder plaat (geen labelkant, geen labelscan) en zonder achterkant (geen barcode) zijn
+    # meerdere losse vellen geen hoes maar losse bladen: een boekje of inserts (de boekjes van Together Alone, Urban
+    # Solitude, Graduated Fool en Hotel New York, apart gescand in extra_scans_all_editions: pagina 1 toont de hoesfoto
+    # en werd 'front', de rest bleef open). Eén vel alleen blijft zoals het is (een losse voorkant kan ook).
+    if fmt != 'cd' and not any(x[0] in ('back', 'sidea', 'sideb', 'sidec', 'sided', 'labela', 'labelb', 'inside') for x in named) \
+            and not label_scans and not any(rims.get(t, 0.0) >= RECORD_RIM for x in named for t in x[1]):
+        sheets_ = [x for x in named if x[0] in ('front', 'unknown') and not all(t in label_scans for t in x[1])
+                   and 'same position' not in paper_notes.get(x[1][0], '')]
+        sizes_ = [extent_mm(x[1], feats) if len(x[1]) > 1 and all(t in feats for t in x[1]) else None for x in sheets_]
+        if len(sheets_) >= 2 and all(e is None or max(e) < 520 for e in sizes_):
+            for x in sheets_:
+                cover_ = x[0] == 'front'
+                x[0], x[2] = 'insert', ('no record and no sleeve back among these scans: a separate printed sheet (booklet or insert)'
+                                        + ('; it shows the cover picture' if cover_ else ''))
     # Cd (jewelcase): er zijn precies twee delen van ±150 mm breed, de achterkaart en het inlay (de twee kanten van
     # het kaartje in de lade). Is de achterkaart gevonden, dan is een andere losse scan met zo'n kaart het inlay.
     # Een vierkant kaartje van 120 mm kan insert, inside of de achterkant van een promo zijn: geen naam.
