@@ -50,6 +50,24 @@ def read(path):
     return 0.0
 
 
+# Sleeve 0.5.52 - feit: een programma dat scans samenvoegt of merkt, schrijft zijn naam in het EXIF-veld Software (For Bitter
+# Or Worse 2009, 2022_scans: 'Scan 8 Panorama.jpg' = PTGui Pro 12.15, met watermerk 'www.ptgui.com'; 'Scan 10_stitch.jpg'
+# = Microsoft ICE v2.0.3.0). Zo'n bestand is geen scan maar al samengesteld uit scans. Een scanner schrijft zijn eigen
+# programma (Apple Image Capture, Epson Scan) of niets.
+DERIVED_WORDS = ('ptgui', 'microsoft ice', 'image composite editor', 'panorama', 'stitch', 'hugin', 'autopano',
+                 'photomerge', 'watermark')
+
+
+def derived_by(path):
+    """De naam van het samenvoeg- of merkprogramma uit EXIF Software, of None als het bestand een gewone scan is."""
+    try:
+        with Image.open(path) as im:
+            software = str(im.getexif().get(305) or '').strip()
+    except Exception:
+        return None
+    return software if software and any(w in software.lower() for w in DERIVED_WORDS) else None
+
+
 def is_glass(w, h, dpi):
     """Is een scan van w x h pixels op deze resolutie precies de A4-glasplaat (±216 x 297 mm)?"""
     a, b = sorted((w / dpi * 25.4, h / dpi * 25.4))

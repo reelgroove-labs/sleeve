@@ -987,6 +987,9 @@ def main():
     # sticker, ook als er een stuk voorkant mee op de scan staat (dan herkent de app hem anders als voorkant).
     named_stickers = [s for s in scans if 'sticker' in os.path.basename(s).lower()]
     scans = [s for s in scans if s not in named_stickers]
+    derived = [(s, scan_dpi.derived_by(s)) for s in scans]
+    derived = [(s, d) for s, d in derived if d]               # Sleeve 0.5.52: samengevoegd/gemerkt bestand, geen scan
+    scans = [s for s in scans if s not in {x for x, _ in derived}]
     codes, imgs, roles = [], [], []
     if url:
         rid = re.search(r'/release/(\d+)', url); mid = re.search(r'/master/(\d+)', url)
@@ -1343,6 +1346,8 @@ def main():
             x, sz = wide[0]
             x[0], x[2] = 'inlay', f'the back is found; this card is {max(sz):.0f} x {min(sz):.0f} mm, the other card of that size in a jewel case: the inlay'
     named += [['sticker', [s], f'the file name says sticker ({os.path.basename(s)})', 0] for s in named_stickers]
+    named += [['unknown', [s], f'made by {d} (it puts scans together or marks them), not a scan: left out of the stacks; '
+                               'drag it into a slot only if you want this file', 0] for s, d in derived]
     named = [x[:3] for x in named]
     if fmt == 'cd':                       # één cd-schijf: meer stapels met een cd is geen feit meer
         cds = [x for x in named if x[0] == 'cd']
