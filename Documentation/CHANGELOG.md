@@ -1,3 +1,7 @@
+# 0.5.47 — Faint paper edge no longer gives doubt
+
+- **A faint darker edge on white paper is noted, not doubted.** Paper within 0.8 mm of the cut was compared with the paper 2.5–4.5 mm further in, and 6 levels (out of 255) darker on two parts of a side gave TWIJFEL. On the booklets of Hotel New York (page 3, top: 13), Urban Solitude (pages 2 and 3, right: 9 and 14) that edge is hardly visible at full size and was judged negligible; a real strip of background measured 40. Now a side gives TWIJFEL from 20 levels; between 6 and 20 the measurement is written in the result ("paper slightly darker near the cut … not visible") and the part stays GOED. Check: `Tests/check_paper_edge.py`.
+
 # 0.5.46 — Transparent vinyl, sharp labels, sleeve edge line, colour panel and sRGB
 
 - **Light correction for transparent vinyl.** Per scanner column the light falloff of the glass is measured (profile `Resources/Tools/scanner-lichtkolom.json`) and removed before partial scans of transparent vinyl are merged. Off by default; set per release (Discogs "transparent", or your choice in the release screen).

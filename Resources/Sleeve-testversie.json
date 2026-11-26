@@ -1,6 +1,6 @@
 {
   "test_build_date": "2026-11-26",
-  "type": "release 0.5.46",
+  "type": "release 0.5.47",
   "source_sha256": {
     "studio_bridge.py": "6caacae677b4c99e101b740e744266b9ba95a2811ec6c33f3effbaa2a87efe63",
     "Tools/scan_blend.py": "bef2426ba93ef2034753a4b8d4422855398edc182c600c779ec09fc2ee6a5832",
@@ -9,8 +9,8 @@
     "Tools/scan_discogs.py": "218e436cca98a32d574aafe9f54fc061a8d2a51846a1615639a3c0077e5dc7f0",
     "Tools/scan_dpi.py": "932001be6694abd81338ae63eb7db164de837b035bb4de4fa49753994452468e",
     "Tools/scan_edges.py": "fc7273d1c0f41ed903e15795e69502b6047ba3ba782408efa7ce326bfbe7f9da",
-    "Tools/scan_feiten.py": "85622d048c2c6adce7cd82d4b192f8a8f249ae94237d35ea7f0fb0517df769f4",
-    "Tools/scan_feitenroute.py": "3dc4779c037840c80eeddfc8c79eff949adad84cc47fa69469b997c9d42c5ef4",
+    "Tools/scan_feiten.py": "1abaa5b6bc0cf1691b760f452415cd47843bc32e4e299f36f8bdea7a183c2959",
+    "Tools/scan_feitenroute.py": "404e3ced32d7e3e8c18be338aefbd7c72bdd962a2ecb72b724ac8b9737510dd6",
     "Tools/scan_fields.py": "c1a59dc5f38ef1bbbf48d134b2a2b269ce22ade0e9ad8b0becdeb498636af36b",
     "Tools/scan_final_check.py": "42e8d985c4215ad876b75d059e386af388413979461c6b6ac9515a8f40e837c2",
     "Tools/scan_kleur_kanten.py": "38ae616239b35e7a888f0bfa3abd5acd9d1804a9075cf2ce11e922862c728964",
