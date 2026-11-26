@@ -133,6 +133,27 @@ def readable_text_score(lines):
 WORD = re.compile(r'^[(\'"]?(?:[A-Z]?[a-z]{2,}|[A-Z]{3,})[.,;:!?)\'"]?$')
 
 
+def centre_tile_text(path, side=1400):
+    """Sleeve 0.5.53 - feit: kleine tekst op een groot vel leest Vision niet op het hele vel (verkleind tot 2200 px is hij
+    ±10 px hoog), wel op een stuk op volle resolutie. For Bitter Or Worse 2021 goud, tekstkant van het insert (lichte
+    songteksten op donker papier, 3600 px): heel vel 0-16 woordtekens per stand; het middelste stuk van 1400 px 1685 bij
+    270 graden tegen 566 bij 90. Dezelfde regel als voor het hele beeld (minstens 40, CLEAR keer de tweede stand)."""
+    im = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    if im is None or max(im.shape[:2]) <= 2200 * 1.2:
+        return None                                       # het hele beeld is al op (bijna) volle resolutie gelezen
+    h, w = im.shape[:2]; k = min(side, h, w)
+    tile = im[(h - k) // 2:(h - k) // 2 + k, (w - k) // 2:(w - k) // 2 + k]
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, 'tile.png'); cv2.imwrite(p, tile)
+        rs, rh = readable_text_score(read_rotations(p, max_side=k))
+    ranked = sorted(rs, key=rs.get, reverse=True)
+    best, second = ranked[0], ranked[1]
+    if rs[best] >= 40 and rs[best] >= CLEAR * max(rs[second], 1):
+        return {'rotate_clockwise': best, 'readable_text_per_rotation': rs,
+                'read_upright': rh[best][:8] + ['readable text at full resolution (centre of the sheet)'], 'verdict': 'LEESBAAR'}
+    return None
+
+
 def sparse_text_orientation(path, first):
     """Confirm a short title by reading the same words at a second scale."""
     second = read_rotations(path, max_side=3200)
@@ -644,6 +665,8 @@ def main():
             if rs[best] >= 40 and rs[best] >= CLEAR * max(rs[second], 1):
                 result = {'rotate_clockwise': best, 'readable_text_per_rotation': rs,
                           'read_upright': rh[best][:8] + ['readable text (not of the release)'], 'verdict': 'LEESBAAR'}
+            elif (tile := centre_tile_text(a.image)) is not None:
+                result = tile; best = tile['rotate_clockwise']
             elif not words:
                 sparse = sparse_text_orientation(a.image, rot)
                 if sparse:

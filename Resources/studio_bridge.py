@@ -217,7 +217,7 @@ def run_facts(output):
  except (OSError,ValueError,TypeError):pass
  return None
 
-def feiten_part(req,part,files,output,work,decision=None,fmt='',release_dpi=0.0,target=None):
+def feiten_part(req,part,files,output,work,decision=None,fmt='',release_dpi=0.0,target=None,occurrence=1):
  """Eén onderdeel door de feitenroute (scan_feitenroute.py); geeft de uitkomst."""
  cmd=[sys.executable,str(TOOLS/'scan_feitenroute.py'),'--part',part,'--out',str(output),'--work',str(work),*files]
  if req.get('discogs'):cmd+=['--discogs',release_url(req['discogs'])]
@@ -227,6 +227,7 @@ def feiten_part(req,part,files,output,work,decision=None,fmt='',release_dpi=0.0,
  if fmt:cmd+=['--format',fmt]
  if release_dpi:cmd+=['--release-dpi',str(release_dpi)]
  if target:cmd+=['--target',str(target)]
+ if occurrence>1 and not target:cmd+=['--occurrence',str(occurrence)]
  if req.get('seamLevel'):cmd+=['--seam-level']
  if req.get('levelVinyl'):cmd+=['--level-vinyl']
  if part=='front':
@@ -337,7 +338,10 @@ def feiten_scan(req,rows,layout,work):
  with CF.ThreadPoolExecutor(max_workers=workers) as pool:
   fmt=release_format(req,[part for part,_ in jobs])
   run_format=fmt
-  futures={pool.submit(feiten_part,req,part,files,output,work/f'part{i}-{uuid.uuid4().hex[:8]}',None,fmt,release_dpi):part for i,(part,files) in enumerate(jobs)}
+  # Sleeve 0.5.53: het hoeveelste deel met deze naam, in de volgorde van de vakken (= scanvolgorde): vaste nummering
+  occ={};seen={}
+  for i,(part,_) in enumerate(jobs):seen[part]=seen.get(part,0)+1;occ[i]=seen[part]
+  futures={pool.submit(feiten_part,req,part,files,output,work/f'part{i}-{uuid.uuid4().hex[:8]}',None,fmt,release_dpi,None,occ[i]):part for i,(part,files) in enumerate(jobs)}
   for future in CF.as_completed(futures):
    result=future.result();done+=1;results.append(result)
    emit('status',message=f'{futures[future]}: {result.get("verdict")} ({done} of {len(jobs)})')
@@ -353,7 +357,8 @@ def feiten_scan(req,rows,layout,work):
    part_=r_.get('part');files_=next((f for p,f in jobs if p==part_),None)
    if not files_:continue
    emit('status',message=f'{part_}: processing again on its own (not enough memory while processing two parts at once)')
-   again=feiten_part(req,part_,files_,output,work/f'again-{uuid.uuid4().hex[:8]}',None,fmt,release_dpi)
+   same_=[f for p,f in jobs if p==part_];k_=next((n for n,f in enumerate(same_,1) if f==(r_.get('scans') or files_)),1)
+   again=feiten_part(req,part_,r_.get('scans') or files_,output,work/f'again-{uuid.uuid4().hex[:8]}',None,fmt,release_dpi,None,k_)
    results[results.index(r_)]=again
    if again.get('path'):emit('outputs',files=[feiten_file(again)])
    for why in again.get('why',[]):emit('warning',message=f'{part_}: {why}')

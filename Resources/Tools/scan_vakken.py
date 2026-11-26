@@ -60,13 +60,38 @@ def thumb(path, work):
     return im, im.shape[1] / max(1, w)
 
 
+BARCODE_PROBLEMS = {}     # scan -> waarom de barcode niet gelezen kon worden (niet: 'geen barcode gevonden')
+
+
 def barcodes(path):
-    try:
-        # Sleeve Transparant: een volle tif van de NAS lezen duurt 14-20 s (TA clear 0008: 14,4 s); 20 s was te krap
-        r = subprocess.run([OCR, path, '--identify'], capture_output=True, text=True, timeout=120)
-        return [re.sub(r'\D', '', c) for c in json.loads(r.stdout).get('barcodes', [])]
-    except Exception:
-        return []
+    """Barcodes op de scan. Lukt het lezen zelf niet (te lang, bestand onleesbaar, tekstherkenning faalt), dan één keer
+    opnieuw; lukt het dan nog niet, dan staat de reden in BARCODE_PROBLEMS. Sleeve 0.5.53: Graduated Fool 2022 groen
+    0009 gaf in één run stil niets (de achterkant bleef open), in vijf latere runs wel de barcode (2,8 s; 5,8 s met drie
+    tegelijk). Een mislukte lezing is iets anders dan 'geen barcode op deze scan' en wordt zo ook gezegd."""
+    problem = None
+    for _ in range(2):
+        try:
+            # Sleeve Transparant: een volle tif van de NAS lezen duurt 14-20 s (TA clear 0008: 14,4 s); 20 s was te krap
+            r = subprocess.run([OCR, path, '--identify'], capture_output=True, text=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            problem = 'reading the scan took longer than 120 s'
+            continue
+        except OSError as e:
+            problem = f'the text recognition could not be started ({e.strerror or e})'
+            continue
+        if r.returncode != 0:
+            tail = (r.stderr or '').strip().splitlines()
+            problem = f'the text recognition stopped with an error ({tail[-1][:120] if tail else "code " + str(r.returncode)})'
+            continue
+        try:
+            found = [re.sub(r'\D', '', c) for c in json.loads(r.stdout).get('barcodes', [])]
+        except (ValueError, AttributeError):
+            problem = 'the text recognition gave no readable answer'
+            continue
+        BARCODE_PROBLEMS.pop(path, None)
+        return found
+    BARCODE_PROBLEMS[path] = problem
+    return []
 
 
 def printed_record_side(path, work):
@@ -485,6 +510,15 @@ def related_paper_groups(groups, feats, rims, paper_notes):
                      for _, _, count, shift, angle in strong)
         corroborated = len(linked_left) >= 2 and len(linked_right) >= 2 and len(strong) >= 3
         duplicate = repeat and len(strong) >= 3
+        # Sleeve 0.5.53 - feit: een tweede scanronde van hetzelfde vel brengt elk stuk met drukwerk op dezelfde plek terug.
+        # Twee vellen met dezelfde opmaak (Queen For A Day 2021: tekstvel kant A en kant B, zelfde foto en logo; 31-35 217,
+        # 34-38 411 punten op dezelfde plek) delen het tekstkwart niet (32 en 36: 0 punten): dat is een ander vel.
+        if duplicate:
+            def same_place(right):
+                return any((lambda c: c[0] >= MIN_LINK and c[1] <= SAME_PLACE_MM and c[2] <= 5)(link(feats[right], feats[left]))
+                           for left in first)
+            printed = [right for right in second if len(feats[right][0]) >= 200]
+            duplicate = all(same_place(right) for right in printed)
         if not (corroborated or duplicate):
             i += 1
             continue
@@ -1317,6 +1351,19 @@ def main():
                                         for t in x[1] for u in inside_scans):
                     continue
                 x[0], x[2] = 'insert', 'front and back are found and this is another sheet: an insert'
+    # Sleeve 0.5.53 - feit: de plaat is gescand maar geen hoes (geen stapel past op de Discogs-hoesfoto, geen barcode).
+    # Een los vel van hooguit één vel groot is dan geen hoes maar een insert (Queen For A Day 2021: twee tekstvellen;
+    # For Bitter Or Worse 2021 goud: een vel met foto en teksten). Alleen als Discogs foto's gaf om mee te vergelijken.
+    if fmt != 'cd' and imgs and any(x[0] in ('side', 'sidea', 'sideb', 'sidec', 'sided') for x in named) \
+            and not any(x[0] in ('front', 'back', 'inside') for x in named):
+        loose_ = [x for x in named if x[0] == 'unknown' and x[2].startswith('no fact')
+                  and 'same position' not in paper_notes.get(x[1][0], '') and not all(t in label_scans for t in x[1])
+                  and not any(rims.get(t, 0.0) >= RECORD_RIM for t in x[1])]
+        for x in loose_:
+            e_ = extent_mm(x[1], feats) if len(x[1]) > 1 and all(t in feats for t in x[1]) else None
+            if e_ is None or max(e_) < 520:
+                x[0], x[2] = 'insert', ('the record is here but no sleeve (no scan matches the Discogs cover photo, no barcode): '
+                                        'this sheet is an insert')
     # Sleeve 0.5.51 - feit: zonder plaat (geen labelkant, geen labelscan) en zonder achterkant (geen barcode) zijn
     # meerdere losse vellen geen hoes maar losse bladen: een boekje of inserts (de boekjes van Together Alone, Urban
     # Solitude, Graduated Fool en Hotel New York, apart gescand in extra_scans_all_editions: pagina 1 toont de hoesfoto
@@ -1376,6 +1423,13 @@ def main():
             k += 1
     if fmt == 'vinyl' and label_scans:
         named = place_label_scans(named, label_scans, feats, expected)
+    # Sleeve 0.5.53: is de barcode op een scan van een open vak niet gelezen (mislukt, niet afwezig), zeg dat en waarom
+    for x in named:
+        if x[0] == 'unknown':
+            failed = [(t, BARCODE_PROBLEMS[t]) for t in x[1] if t in BARCODE_PROBLEMS]
+            if failed:
+                x[2] += '; the barcode could not be checked on ' + ', '.join(f'{os.path.basename(t)} ({why_})' for t, why_ in failed) + \
+                        ': this may be the back; sort the scans again to read it once more'
     # vangnet: elke scan die erin ging, staat in een vak (anders 'onbekend')
     placed = {t for x in named for t in x[1]}
     for s_ in sys.argv[4:]:
