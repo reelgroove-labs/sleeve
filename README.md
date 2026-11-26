@@ -6,7 +6,11 @@ release. With a queue, projects and a final review.
 
 ![Sleeve](Artwork/Sleeve.png)
 
-## Version 0.5.47
+## Version 0.5.51
+
+New in 0.5.51: the app puts a sticker on the shrink wrap, a nearly blank piece of a sheet and separately scanned booklets in the right slots itself. 0.5.50: on a label nearly the colour of the vinyl, the paper edge is also confirmed by texture.
+
+New in 0.5.48: the side of a separate label scan is read again when text recognition was still starting up, and an unread side is reported in the slot.
 
 New in 0.5.47: a faint darker edge along the cut of white paper (below 20 levels out of 255) is noted instead of giving doubt.
 
