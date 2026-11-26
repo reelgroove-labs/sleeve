@@ -263,8 +263,16 @@ def feiten_part(req,part,files,output,work,decision=None,fmt='',release_dpi=0.0,
   return {'part':part,'scans':files,'verdict':'FOUT','why':[f'stopped after {limit/60:.0f} minutes without a result (it hung). The other parts went on; process this part again.']}
  err=''.join(err_lines)
  for line in (err or '').splitlines()[-5:]:emit('log',message=line)
- try:return json.loads(out.strip().splitlines()[-1])
+ try:result=json.loads(out.strip().splitlines()[-1])
  except (ValueError,IndexError):return {'part':part,'scans':files,'verdict':'FOUT','why':[(err or 'no result').strip().splitlines()[-1] if (err or '').strip() else 'no result']}
+ # Sleeve 0.5.52: een samengevoegd of gemerkt bestand (EXIF Software: PTGui, Microsoft ICE, ...) is geen scan; een deel
+ # waarin het zit, is nooit zomaar GOED (For Bitter Or Worse 2009 kant A: watermerk 'www.ptgui.com' kreeg GOED).
+ sys.path.insert(0,str(TOOLS));import scan_dpi
+ made=[(f,scan_dpi.derived_by(f)) for f in files];made=[(f,d) for f,d in made if d]
+ if made and isinstance(result,dict):
+  result.setdefault('why',[]).extend(f'{os.path.basename(f)} is not a scan: made by {d} (it puts scans together or marks them; it can carry a watermark)' for f,d in made)
+  if result.get('verdict')=='GOED':result['verdict']='TWIJFEL'
+ return result
 
 def feiten_file(result):
  return {'path':result.get('path',''),'source':(result.get('scans') or [''])[0],'partial':False,'part':result.get('part','unknown'),
