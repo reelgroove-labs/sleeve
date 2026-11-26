@@ -219,6 +219,10 @@ def discogs_orientation(img, discogs, disc=False):
     k = 1200 / max(base.shape[:2])
     small = cv2.resize(base, None, fx=k, fy=k, interpolation=cv2.INTER_AREA) if k < 1 else base
     found = SD.matches(small, photos, with_coverage=True)
+    # Sleeve 0.5.53 - feit: een overeenkomst met schaal 0 is ontaard (alle punten op één punt), geen stand. For Bitter
+    # Or Worse 2021 goud, tekstkant van het insert: 150 'punten' op de foto van de plaat, schaal 0,0, dekking 0; het vel
+    # bleef een kwartslag gedraaid staan. Zoals bij het indelen (scan_vakken.real) telt alleen een echte schaal.
+    found = [f for f in found if float(np.hypot(f[2][0, 0], f[2][1, 0])) > .05]
     if not found:
         return None
     inliers, _, M, cover = found[0]
@@ -1233,6 +1237,7 @@ def main():
     p.add_argument('--decision', default=''); p.add_argument('--variant', default=''); p.add_argument('--format', default=''); p.add_argument('--release-dpi', type=float, default=0.0); p.add_argument('--year', default='')
     p.add_argument('--seam-level', action='store_true')       # optie: toon langs de naden gelijktrekken (randen uit de gewone run)
     p.add_argument('--level-vinyl', action='store_true')     # optie: helderheid van effen licht vinyl gelijktrekken (scan_vlak)
+    p.add_argument('--occurrence', type=int, default=1)    # Sleeve 0.5.53: het hoeveelste deel met deze naam in scanvolgorde (insert, insert_2, ...)
     p.add_argument('--target', default='')                 # beslissing: precies dit bestand vervangen (niet een ander onderdeel met dezelfde naam)
     a = p.parse_args()
     folder = os.path.dirname(os.path.abspath(a.scans[0]))
@@ -1871,7 +1876,10 @@ def main():
             result['name_note'] = str(e)
     name = name or f'{os.path.splitext(os.path.basename(a.scans[0]))[0]}_{a.part}'
     os.makedirs(a.out, exist_ok=True)
-    path = os.path.join(a.out, name + '.png'); n = 2
+    # Sleeve 0.5.53 - feit: het n-de deel met dezelfde naam in scanvolgorde krijgt _n. Twee delen lopen tegelijk; wie het
+    # eerst klaar was kreeg de naam zonder nummer (Queen For A Day 2021: _insert was het tekstvel van kant B, scans 35-38).
+    occ = max(1, a.occurrence)
+    path = os.path.join(a.out, name + ('.png' if occ == 1 else f'_{occ}.png')); n = occ + 1
     while os.path.exists(path) and not a.decision:
         path = os.path.join(a.out, f'{name}_{n}.png'); n += 1
     if a.target:
