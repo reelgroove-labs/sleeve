@@ -684,6 +684,10 @@ CD_EDGE_STRONG = 40.0    # cd, extra rondes: alleen een lijn met zoveel afwijkin
 # gemeten op 20 geexporteerde kanten (TA gold/yellow/clear, US white, GF silver/green/pink) hooguit 8,5; een echte
 # donkere rand (Tests/check_source_checks.py: -24 niveaus) meet 18 of meer. Grens daartussen.
 VINYL_EDGE_WARNING = 12.0        # donkerte in OpenCV-niveaus boven naburig vinyl
+PAPER_EDGE_WARNING = 20.0        # papier langs de snede: pas vanaf 20 niveaus donkerder dan het papier 2,5-4,5 mm verder zichtbaar.
+# Feit (boekjes HNY p3 bovenrand 13, US p2/p3 rechterrand 9 en 14, 26 nov): randjes van 9-14 niveaus over hooguit 0,8 mm op wit
+# papier zijn op ware grootte nauwelijks te zien (gebruiker: verwaarloosbaar); een echte strook mat 40. Daaronder alleen noteren.
+PAPER_EDGE_NOTE = 6.0
 CD_EDGE_TOL = 6.0       # afwijking (Lab, OpenCV-schaal 0-255) waarboven een randstuk telt
 FAR_FROM_LID = 60.0   # Lab-afstand papier-klep waarboven per stuk van een zijde bijgesneden mag worden (witte klep)
 
@@ -756,10 +760,15 @@ def report_vinyl_edge_tone(result, crop, px_mm, disc):
         findings = [f'{angle}° ({delta:.0f})' for angle, delta in measurements['sectors'] if delta >= VINYL_EDGE_WARNING]
         note = 'record tone near the cut: darker than the nearby vinyl at '
     else:
-        findings = [
-            f'{side} ({max(values):.0f})' for side, values in measurements.items()
-            if sum(value >= 6 for value in values) >= 2 and not gradual_paper(crop, side, px_mm)
-        ]
+        darker = {side: values for side, values in measurements.items()
+                  if sum(value >= PAPER_EDGE_NOTE for value in values) >= 2 and not gradual_paper(crop, side, px_mm)}
+        findings = [f'{side} ({max(values):.0f})' for side, values in darker.items()
+                    if sum(value >= PAPER_EDGE_WARNING for value in values) >= 2]
+        faint = [f'{side} ({max(values):.0f})' for side, values in darker.items() if f'{side} ({max(values):.0f})' not in findings]
+        if faint:
+            result['paper_edge_faint'] = faint
+            result['applied'] = (result.get('applied', '') + ' paper slightly darker near the cut on the ' + ', '.join(faint)
+                                 + f' (levels out of 255; below {PAPER_EDGE_WARNING:.0f}, not visible)').strip()
         note = 'paper tone near the cut: darker than nearby paper on the '
     if findings:
         result['verdict'] = 'TWIJFEL'

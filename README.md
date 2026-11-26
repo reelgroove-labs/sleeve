@@ -6,9 +6,11 @@ release. With a queue, projects and a final review.
 
 ![Sleeve](Artwork/Sleeve.png)
 
-## Version 0.5.46
+## Version 0.5.47
 
-New in this version, on top of 0.5.45:
+New in 0.5.47: a faint darker edge along the cut of white paper (below 20 levels out of 255) is noted instead of giving doubt.
+
+New in 0.5.46, on top of 0.5.45:
 
 - **Transparent vinyl:** an optional light correction per scanner column (button "Light correction (transparent vinyl)"), set per release from Discogs or by you.
 - **Sharp labels:** the whole label is taken from the scan with the sharpest label and placed on the merged record side; optionally the paper label is enlarged by 1 mm. On soft label edges (metallic gold and silver vinyl) the paper edge is confirmed by a second, independent measurement.

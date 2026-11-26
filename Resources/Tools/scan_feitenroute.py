@@ -1767,6 +1767,8 @@ def main():
         paper_audit = {'verdict': 'GOED', 'why': []}
         SF.report_vinyl_edge_tone(paper_audit, img, dpi / 25.4, False)
         why.extend(paper_audit['why'])
+        if paper_audit.get('applied'):
+            result['applied'] = (result.get('applied', '') + ' ' + paper_audit['applied']).strip()
     if (fmt == 'vinyl' and a.part == 'front' and img is not None
             and not already and not facts.get('already_cut') and decision.get('crop') != 'keep'
             and os.environ.get('SLEEVE_COVER_SIDE_SHADOW', '1') == '1'):
