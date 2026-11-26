@@ -61,6 +61,7 @@ class CorrectedImage:
         self.raw = raw
         self.shape = raw.shape
         self.gain = None
+        self.white_anchor = None
 
     def __getitem__(self, rows):
         start, stop, step = rows.indices(self.shape[0])
@@ -69,4 +70,7 @@ class CorrectedImage:
         result = self.raw[start:stop].astype(np.float32)
         if self.gain is not None:
             result *= self.gain.rows(start, stop)
+            if self.white_anchor is not None:
+                from scan_paper_light import preserve_white
+                result = preserve_white(self.raw[start:stop], result, self.white_anchor)
         return result

@@ -80,6 +80,9 @@ struct StudioReviewCard:View {
             VStack(spacing:10) {
                 StudioThumbnail(url:item.url,maxPixel:320).frame(width:140,height:140).background(studioPaper,in:RoundedRectangle(cornerRadius:10))
                 Button("Open Full Image"){NSWorkspace.shared.open(item.url)}.font(.caption)
+                if let path=item.seamDetails, FileManager.default.fileExists(atPath:path) {
+                    Button("Open Seam Details"){NSWorkspace.shared.open(URL(fileURLWithPath:path))}.font(.caption)
+                }
                 if item.part.hasPrefix("side") || item.part.hasPrefix("cd") {Button("Adjust Crop…"){model.openCrop(item)}.font(.caption).disabled(model.busy || model.queueRunning)}
                 Button("Reprocess Part…"){model.openRetry(item)}.font(.caption).disabled(model.busy || model.queueRunning)
             }

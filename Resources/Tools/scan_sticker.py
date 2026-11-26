@@ -33,9 +33,9 @@ def load(path):
     return im
 
 
-def closed_rects(g, w, h):
+def closed_rects(g, w, h, lo=30, hi=90):
     """Gesloten, bijna rechthoekige vormen (kader of rand): het binnenste van de randen."""
-    e = cv2.dilate(cv2.Canny(g, 30, 90), np.ones((5, 5), np.uint8))
+    e = cv2.dilate(cv2.Canny(g, lo, hi), np.ones((5, 5), np.uint8))
     n, lab, st, _ = cv2.connectedComponentsWithStats(255 - e, connectivity=4)
     out = []
     for i in range(1, n):
@@ -60,19 +60,28 @@ def outer_offset(im, rect, ang):
     L, T = bp.min(0); Rr, B = bp.max(0); W0, H0 = Rr - L, B - T
     lab = cv2.cvtColor(rot, cv2.COLOR_BGR2LAB).astype(np.float32)
     reach = int(0.12 * min(W0, H0)); k = 4
+    # kleur van de sticker binnen het kader (midden van de vorm)
+    c_in = np.median(lab[int(T + .2 * H0):int(B - .2 * H0), int(L + .2 * W0):int(Rr - .2 * W0)].reshape(-1, 3), 0)
     def prof(name):
         if name in ('top', 'bottom'):
-            xs = np.arange(int(L + .15 * W0), int(Rr - .15 * W0)); base, sg = (T, -1) if name == 'top' else (B, 1)
+            xs = np.arange(max(0, int(L + .15 * W0)), min(w, int(Rr - .15 * W0))); base, sg = (T, -1) if name == 'top' else (B, 1)
             rows = [int(base + sg * d) for d in range(reach) if 0 <= int(base + sg * d) < h]
             p = np.array([np.median(lab[r, xs], 0) for r in rows])
         else:
-            ys = np.arange(int(T + .15 * H0), int(B - .15 * H0)); base, sg = (L, -1) if name == 'left' else (Rr, 1)
+            ys = np.arange(max(0, int(T + .15 * H0)), min(h, int(B - .15 * H0))); base, sg = (L, -1) if name == 'left' else (Rr, 1)
             cols = [int(base + sg * d) for d in range(reach) if 0 <= int(base + sg * d) < w]
             p = np.array([np.median(lab[ys, c], 0) for c in cols])
         j = np.zeros(len(p))
         if len(p) > 2 * k:
             j[k:-k] = np.linalg.norm(p[2 * k:] - p[:-2 * k], axis=1)
         j[:max(k + 2, int(.01 * min(W0, H0)))] = 0
+        # Gedrukt kader: buiten de kaderlijn is het nog sticker (kleur als binnen). Dan telt een sprong pas als
+        # zijn binnenkant sticker is, niet het donkere kaderlijntje (dat gaf een snede binnen de rand: TA gold,
+        # US white, GF silver 1-1,5 mm te klein).
+        dist = np.linalg.norm(p - c_in, axis=1) if len(p) else np.zeros(0)
+        if len(p) > 2 * k and (dist[2:] < 30).any():
+            ok = np.zeros(len(p), bool); ok[k:] = dist[:-k] < 30
+            j[~ok] = 0
         return j
     J = {s: prof(s) for s in ('top', 'bottom', 'left', 'right')}
     n = min(len(j) for j in J.values())
@@ -146,11 +155,44 @@ def main():
     h, w = im.shape[:2]; g = cv2.GaussianBlur(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY), (0, 0), 2)
     res = {'verdict': 'GOED', 'why': []}
     rects = closed_rects(g, w, h)
+    if not rects:
+        # Sleeve Transparant: een gouden sticker op een drukke hoes geeft bij de gewone drempels geen gesloten rand
+        # (Deena & Jim 2023 wit, Paradise 2022: de losse stickerscan); met lagere drempels wel
+        rects = closed_rects(g, w, h, 15, 45)
+    if not rects:
+        # Sleeve Transparant: de sticker raakt op een plek de rand van de scan (de scanner sneed krap bij: Hotel New York
+        # 2023, FBOW 2023 rood): daar is geen randlijn, de omtrek is niet dicht. Een strook in de kleur van de achtergrond
+        # (mediaan langs de scanrand) eromheen maakt hem dicht; de gevonden vorm schuift daarna terug.
+        P_ = 20
+        ring = np.concatenate([g[:2].ravel(), g[-2:].ravel(), g[:, :2].ravel(), g[:, -2:].ravel()])
+        gp = cv2.copyMakeBorder(g, P_, P_, P_, P_, cv2.BORDER_CONSTANT, value=int(np.median(ring)))
+        found = closed_rects(gp, w + 2 * P_, h + 2 * P_, 15, 45)
+        rects = [(ra, ((r[0][0] - P_, r[0][1] - P_), r[1], r[2]), ca, c - P_) for ra, r, ca, c in found]
+    if not rects:
+        # Sleeve Transparant: de randlijn heeft ergens een gat (weinig verschil tussen sticker en achtergrond op één plek:
+        # Hotel New York 2023, 00 18). Feit: de sticker is donkerder (of lichter) dan de achtergrond: splitsen op
+        # helderheid (Otsu); de grootste vorm die de scanrand niet raakt en zijn rechthoek bijna vult.
+        _, th = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        for m_ in (255 - th, th):
+            m_ = cv2.morphologyEx(m_, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+            n_, lab_, st_, _ = cv2.connectedComponentsWithStats(m_, connectivity=4)
+            for i_ in sorted(range(1, n_), key=lambda k: -st_[k][4])[:2]:
+                x_, y_, ww_, hh_, a_ = st_[i_]
+                if x_ <= 1 or y_ <= 1 or x_ + ww_ >= w - 1 or y_ + hh_ >= h - 1 or a_ < .1 * w * h:
+                    continue
+                c_ = max(cv2.findContours((lab_ == i_).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)[0], key=cv2.contourArea)
+                r_ = cv2.minAreaRect(c_); ra_ = r_[1][0] * r_[1][1]; ca_ = cv2.contourArea(cv2.convexHull(c_))
+                if ra_ > 0 and ca_ / ra_ > FILL:
+                    rects = [(ra_, r_, ca_, c_)]; break
+            if rects:
+                break
     circ = find_circle(im)
     choice = None
     if rects:
         ra, rect, ca, cont = rects[0]
-        ang = rect[2] - 90 if rect[2] > 45 else rect[2]      # alleen het scheefstaan; een kwartslag doet het lezen van de tekst
+        ang = ((rect[2] + 45) % 90) - 45                     # alleen het scheefstaan (-45..45); een kwartslag doet het lezen van de tekst
+        # (OpenCV geeft de hoek soms als -89,8 in plaats van 0,2: dan draaide de scan bijna een kwartslag en viel op een kleine
+        # scan een stuk sticker buiten beeld: Hotel New York 2022, Who's Your Momma 2022, Fake It 2021)
         off, strength, rot, (L, T, Rr, B) = outer_offset(im, rect, ang)
         r_in = math.sqrt(max(0, (ra - ca) / (4 - math.pi)))
         choice = ('rect', rect, ang, off, strength, r_in, ra, cont)
@@ -233,6 +275,71 @@ def main():
         o -= 1                                                     # de randpixel is gemengd
         res.update(shape='rectangle with frame' if o > 2 * gap else 'rectangle', edge_from_shape_px=round(o, 1))
         L, T, Rr, B = L - o, T - o, Rr + o, B + o
+        # De rand is op het verkleinde beeld gevonden (één werk-pixel is ±4 px). Per zijde op volle resolutie precies
+        # leggen (zie hieronder). Met kader: het kader hoeft niet in het midden te liggen (TA gold, GF silver: tot 0,7 mm
+        # verschil). Zonder kader: de schaduw van de sticker viel mee in de snede (TA yellow rechts ±8 px, GF green
+        # rechts en onder). Lukt het meten niet op alle vier zijden, dan blijft de oude weg (vorm + opruimen op kleur).
+        framed = True
+        if framed:
+            def prof_out(nm, u0, u1):
+                us = np.arange(u0, u1)
+                if nm in 'TB':
+                    xs = slice(int(L + .3 * (Rr - L)), int(L + .7 * (Rr - L)))
+                    rows = (int(round(T)) - us) if nm == 'T' else (int(round(B)) - 1 + us)
+                    return np.array([np.median(labr[r, xs], 0) if 0 <= r < H else np.full(3, np.nan) for r in rows])
+                ys = slice(int(T + .3 * (B - T)), int(T + .7 * (B - T)))
+                cols = (int(round(L)) - us) if nm == 'L' else (int(round(Rr)) - 1 + us)
+                return np.array([np.median(labr[ys, c], 0) if 0 <= c < W else np.full(3, np.nan) for c in cols])
+            ext = {}; cols_ = []
+            for nm in 'TBLR':
+                P = prof_out(nm, -20, 46)                          # index i = u + 20
+                ok_ = ~np.isnan(P).any(1)
+                if not ok_[:24].all():
+                    continue
+                last_ = int(np.nonzero(ok_)[0].max())        # verste plek die nog op de scan ligt
+                if last_ < 32:
+                    # Minder dan ±1 mm achtergrond op de scan aan deze zijde (Trails of Fails 2022 standard, onder: een
+                    # strook foto tot de scanrand). Dan van binnen naar buiten: de rand is waar de kleur duidelijk (2 px
+                    # aaneen) van de sticker afwijkt.
+                    # (stickerkleur dieper naar binnen gemeten, u -60..-40: de strook kan al binnen de grove snede liggen)
+                    Q = prof_out(nm, -60, 46); okq = ~np.isnan(Q).any(1)
+                    if okq[:20].all():
+                        st_in = np.median(Q[0:20], 0)
+                        far_ = [float(np.linalg.norm(Q[i] - st_in)) > 30 if okq[i] else True for i in range(len(Q))]
+                        j_ = next((i for i in range(20, len(Q) - 1) if far_[i] and far_[i + 1]), None)
+                        if j_ is not None:
+                            ext[nm] = j_ - 1 - 60
+                    continue
+                # Stickerkleur: mediaan over u -20..-2 (na de grove stap ligt de kaderlijn verder naar binnen; een waas
+                # langs de rand valt er hooguit voor een klein deel in en telt in de mediaan niet mee).
+                st_ = np.median(P[0:19], 0); bg_ = np.median(P[max(30, min(50, last_ - 9)):min(60, last_ + 1)], 0); gap_ = float(np.linalg.norm(bg_ - st_))
+                if gap_ < 16:
+                    continue                                       # achtergrond lijkt op de sticker: niets te meten
+                # De rand ligt waar de kleur een kwart van de weg naar de achtergrond van de sticker af is, niet halverwege:
+                # waar de sticker iets loskomt loopt een grijze waas van ±7 px langs de rand (TA gold rechts, US white
+                # boven) en halverwege viel de snede midden in die waas (wit randje).
+                thr = .25 * gap_
+                cols_.append((st_, thr))
+                # Vanaf de achtergrond naar binnen tot de eerste stickerkleur (3 px aaneen): waas en schaduw vallen
+                # erbuiten en het kaderlijntje verderop wordt nooit bereikt (GF silver).
+                near = np.linalg.norm(P - st_, axis=1) <= thr
+                i_ = next((i for i in range(min(49, last_ - 1), 1, -1) if near[i - 2:i + 1].all()), None)
+                if i_ is not None:
+                    # De buitenste pixels zijn vaak gemengd: een glimrandje (snijrand die licht vangt) of het donkere
+                    # randje van de snede. Naar binnen zolang de kleur duidelijk van de sticker afwijkt (hooguit 4 px).
+                    for _ in range(4):
+                        if float(np.linalg.norm(P[i_] - st_)) > 12:
+                            i_ -= 1
+                        else:
+                            break
+                    ext[nm] = i_ - 20                              # laatste pixel die nog sticker is
+            if len(ext) >= 3:
+                # (een zijde zonder achtergrond op de scan blijft waar de grove stap hem legde)
+                T, B, L, Rr = T - ext.get('T', 0), B + ext.get('B', 0), L - ext.get('L', 0), Rr + ext.get('R', 0)
+                side_in = {}                                       # de snede ligt nu per zijde op de rand
+                res['edge_refined_px'] = {k_: int(v_) for k_, v_ in ext.items()}
+            else:
+                framed = False
         crop = rotf[max(0, int(round(T))):int(round(B)), max(0, int(round(L))):int(round(Rr))]
         ch, cw = crop.shape[:2]
         # de vorm van het kader zelf (met zijn echte hoeken), rondom o groter: de vorm van de sticker
@@ -245,6 +352,23 @@ def main():
             rr = int(round(abs(o) * 4)); se_ = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * rr + 1, 2 * rr + 1))
             m4 = cv2.dilate(m4, se_) if o > 0 else cv2.erode(m4, se_)
         mask = cv2.resize(m4, (cw, ch), interpolation=cv2.INTER_AREA)
+        if framed:
+            # Hoeken: de hoek van de sticker is niet die van het kader plus o (niet hetzelfde middelpunt; TA gold: kader
+            # ±67 px, sticker ±65 px bij 49 px tussenruimte). Gemeten op kleur: langs de diagonaal van elke hoek de
+            # afstand tot de eerste stickerkleur d; een ronde hoek met straal r raakt beide zijden, d = r (wortel 2 - 1).
+            # Mediaan van de vier hoeken (een beschadigde hoek telt niet mee).
+            st_m = np.median([c_[0] for c_ in cols_], 0); thr_m = float(np.median([c_[1] for c_ in cols_]))
+            lab_c = cv2.cvtColor(cv2.GaussianBlur(crop, (5, 5), 0), cv2.COLOR_BGR2LAB).astype(np.float32)
+            rs_ = []
+            for sy, sx in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+                y0_, x0_ = (0 if sy > 0 else ch - 1), (0 if sx > 0 else cw - 1)
+                inside_ = [np.linalg.norm(lab_c[y0_ + sy * t, x0_ + sx * t] - st_m) < thr_m for t in range(min(ch, cw) // 4)]
+                t_ = next((t for t in range(len(inside_) - 5) if all(inside_[t:t + 5])), None)
+                if t_ is not None:
+                    rs_.append(t_ * math.sqrt(2) / (math.sqrt(2) - 1))
+            r_c = float(np.median(rs_)) if rs_ else r_in / s + o
+            res['corner_radius_px'] = round(r_c, 1)
+            mask = round_rect_mask(cw, ch, max(1.0, r_c))
         # Hoeken op kleur: de hoek van de sticker kan ronder zijn dan zijn kader. In elk hoekvak wordt wat de kleur
         # van de achtergrond heeft (gemeten net buiten de rechte zijden) en aan de buitenhoek vastzit, transparant.
         labf = cv2.cvtColor(rotf, cv2.COLOR_BGR2LAB).astype(np.float32)
@@ -256,7 +380,7 @@ def main():
         lc = labf[t0:t0 + ch, l0:l0 + cw]
         inside = np.concatenate([lc[band:2 * band, mid(0, cw)].reshape(-1, 3), lc[ch - 2 * band:ch - band, mid(0, cw)].reshape(-1, 3),
                                  lc[mid(0, ch), band:2 * band].reshape(-1, 3), lc[mid(0, ch), cw - 2 * band:cw - band].reshape(-1, 3)])
-        if len(outside) > 20 and len(inside) > 20:
+        if not framed and len(outside) > 20 and len(inside) > 20:   # na de verfijning: zijden en hoeken liggen al op kleur
             bg_c, st_c = np.median(outside, 0), np.median(inside, 0)
             if np.linalg.norm(bg_c - st_c) > 12:
                 q = int(min(cw, ch) * .12)
@@ -269,6 +393,20 @@ def main():
                         cv2.floodFill(ff, m_, (cx_, cy_), 2)
                         cut_ = cv2.dilate((ff == 2).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0   # en de gemengde randpixel
                         mask[y0:y0 + q, x0:x0 + q][cut_] = 0
+                # Beoordeel ook de rechte zijden. Verwijder uitsluitend pixels dicht bij
+                # de contour die op de gemeten achtergrond lijken en van buiten bereikbaar zijn.
+                depth = cv2.distanceTransform(np.pad((mask >= 128).astype(np.uint8), 1),
+                                              cv2.DIST_L2, 5)[1:-1, 1:-1]
+                limit = max(2, round((dpi or 300) / 25.4 * .18))
+                uncertain = (mask > 0) & (depth <= limit)
+                colors = lc[uncertain]
+                near_bg = np.linalg.norm(colors - bg_c, axis=1)
+                near_sticker = np.linalg.norm(colors - st_c, axis=1)
+                removable = mask == 0
+                removable[uncertain] = near_bg < .6 * near_sticker
+                outside_mask = np.pad(removable.astype(np.uint8), 1, constant_values=1)
+                cv2.floodFill(outside_mask, None, (0, 0), 2)
+                mask[outside_mask[1:-1, 1:-1] == 2] = 0
                 mask = cv2.GaussianBlur(mask, (3, 3), 0)
         for nm, k_ in side_in.items():
             if k_ > 0:
@@ -279,6 +417,31 @@ def main():
                 else: mask[:, cw - k_:] = 0
         if any(v > 0 for v in side_in.values()):
             res['side_trim_px'] = {k: v for k, v in side_in.items() if v > 0}
+        # Sleeve Transparant: laatste controle per zijde op de uitsnede zelf. Feit: de buitenste rijen moeten sticker zijn.
+        # Van buiten naar binnen (hooguit 1,5 mm) tot 3 rijen aaneen die op de sticker lijken (de band 1,5-3 mm binnen de
+        # snede); wat daarvoor ligt is hoes of schaduw (Fake It 2021: boven 0,3 mm donkere hoes voorbij een glimlijntje).
+        pmm_ = (dpi or 300.0) / 25.4
+        labc = cv2.cvtColor(crop[:, :, :3], cv2.COLOR_BGR2LAB).astype(np.float32)
+        cut_ = {}
+        for nm in 'TBLR':
+            v_ = {'T': labc, 'B': labc[::-1], 'L': labc.transpose(1, 0, 2), 'R': labc.transpose(1, 0, 2)[::-1]}[nm]
+            n_ = v_.shape[1]; mid_ = slice(int(.2 * n_), int(.8 * n_))
+            prof_ = np.median(v_[:int(3.2 * pmm_), mid_], axis=1)
+            if len(prof_) < int(3 * pmm_):
+                continue
+            ref_ = np.median(prof_[int(1.5 * pmm_):int(3 * pmm_)], axis=0)
+            dist_ = np.linalg.norm(prof_ - ref_, axis=1)
+            near_ = (dist_ <= 25) | (prof_[:, 0] >= ref_[0] + 20)          # sticker, of het lichte snijrandje ervan
+            lim_ = int(1.5 * pmm_)
+            i_ = next((i for i in range(lim_) if near_[i:i + 3].all()), 0)
+            if i_ >= 2 and dist_[:i_].mean() > 25:
+                cut_[nm] = i_
+        if cut_:
+            t_, b_, l_, r_ = cut_.get('T', 0), cut_.get('B', 0), cut_.get('L', 0), cut_.get('R', 0)
+            crop = crop[t_:crop.shape[0] - b_, l_:crop.shape[1] - r_]
+            mask = round_rect_mask(crop.shape[1], crop.shape[0], max(1.0, res.get('corner_radius_px') or (r_in / s))) if framed \
+                else mask[t_:mask.shape[0] - b_, l_:mask.shape[1] - r_]
+            res['edge_trim_px'] = cut_
         crop = np.dstack([crop, mask])
         res['angle'] = round(ang, 2)
         res['area_frac'] = round(crop.shape[0] * crop.shape[1] / (W * H), 4)

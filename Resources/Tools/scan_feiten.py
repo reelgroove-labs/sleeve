@@ -62,6 +62,11 @@ SHAPES['cd-cardsleeve'] = {'front': ('rect', (123, 131), (123, 131), True), 'bac
                            'insert': _BOOKLET, 'inside': ('rect', (123, 131), (123, 131), True),
                            'cd': _DISC, 'cd1': _DISC, 'cd2': _DISC}
 PART_SHAPE = {k: ('disc' if v[0] == 'disc' else 'sleeve') for f in SHAPES.values() for k, v in f.items()}
+CD_SHEET_CHROMA = 8.0             # een vel met zoveel kleur (Lab-chroma, OpenCV-schaal) is gekleurd
+CD_EXTEND_MAX_MM = 2.5            # zo ver mag de snede naar buiten volgens het drukwerk
+CD_PRINT_PAD_MM = 0.1             # net binnen het einde van het drukwerk snijden
+HOLE_EDGE_MIN = 25.0              # kleurverschil (0-255) binnen/buiten de gemeten gatrand waarboven het een echte rand is
+HOLE_CENTRE_MM = 0.4               # zo ver mag een gemeten gat naast het midden van de schijf liggen (anders is het niet het gat)
 WORK_PX_MM = 2.0                 # rekenschaal voor het zoeken
 ON_CIRCLE = 0.9                  # zoveel van de gemeten richtingen moet op de cirkel liggen
 DISC_EDGE_MM = 1.0               # feit: de rand van een plaat is afgerond, ±1 mm breed; de scanner
@@ -512,6 +517,29 @@ def find_hole(img, r, reach):
     return lo + x, lo + y, float(cov[y, x])
 
 
+def supported_standard_hole(img, hx, hy, standard_radius, fitted_radius, px_mm, coverage):
+    """Prefer a directly observed spindle edge over a larger printed ring.
+
+    This never caps an enlarged hole by its nominal size: the nominal circle
+    must already have strong measured coverage and a material transition on
+    the same majority of its circumference. Unchanged small fits and absent
+    inner edges preserve the existing result.
+    """
+    span=max(2.,.3*px_mm)
+    # Both edges need disjoint inside/outside sampling intervals. Nearby
+    # fits describe the same worn spindle rim, not a separate printed ring.
+    if fitted_radius <= standard_radius + 2*span or coverage < ON_CIRCLE:
+        return False
+    angles=np.linspace(0,2*math.pi,72,endpoint=False)
+    rings=[]
+    for radius in [standard_radius-span,standard_radius+span]:
+        x=(hx+radius*np.cos(angles)).astype(np.float32).reshape(1,-1)
+        y=(hy+radius*np.sin(angles)).astype(np.float32).reshape(1,-1)
+        rings.append(cv2.remap(img,x,y,cv2.INTER_LINEAR)[0].astype(np.float32))
+    contrast=np.linalg.norm(rings[0]-rings[1],axis=1)
+    return bool(np.mean(contrast>HOLE_EDGE_MIN)>=ON_CIRCLE)
+
+
 def hole_outline(img, hx, hy, r, n=72, outermost=False, top=1.7):
     """Het echte gat zoals het gescand is (kan uitgesleten of niet helemaal rond
     zijn): in n richtingen vanuit het midden van het gat de sterkste sprong tussen
@@ -640,17 +668,339 @@ def missing_part(result, covered, px_mm):
     h, w = gap.shape; ys, xs = np.nonzero(gap)
     where = ('top' if ys.mean() < h / 3 else 'bottom' if ys.mean() > 2 * h / 3 else 'middle') + '-' + \
             ('left' if xs.mean() < w / 3 else 'right' if xs.mean() > 2 * w / 3 else 'centre')
-    result['verdict'] = 'TWIJFEL'
+    result['verdict'] = 'FOUT'                             # Sleeve Transparant: een stuk ontbreekt = opnieuw scannen (André)
     result.setdefault('why', []).append(f'not scanned: {area:.0f} mm2 ({gap.mean():.1%}) at {where} (before turning upright)')
     result['message'] = (f'Sleeve can do no more than this: {area:.0f} mm2 at {where} is not on any scan. '
                          'Scan that part again (a black sheet under the lid makes the edges clear), '
                          'or fill it in yourself, for example in Photoshop. Sleeve does not invent image.')
 
 
+CD_EDGE_MAX_MM = 0.6    # cd: een randstuk tot zo breed dat afwijkt van het papier ernaast is geen drukwerk
+CD_EDGE_WIN_MM = 3.0    # cd: lengte van de stukjes langs een zijde waarop de rand wordt gemeten
+CD_EDGE_SEG_MM = 0.25   # zo breed is het stuk papier waar het randstuk mee vergeleken wordt
+CD_EDGE_PAD_MM = 0.04   # en zo veel erbij (halve pixels van de snede)
+CD_EDGE_STRONG = 40.0    # cd, extra rondes: alleen een lijn met zoveel afwijking van het papier (een donkere randlijn)
+# Sleeve Transparant (21 nov): 5 sloeg aan op de eigen verhoogde rand van de plaat (licht valt per hoek anders):
+# gemeten op 20 geexporteerde kanten (TA gold/yellow/clear, US white, GF silver/green/pink) hooguit 8,5; een echte
+# donkere rand (Tests/check_source_checks.py: -24 niveaus) meet 18 of meer. Grens daartussen.
+VINYL_EDGE_WARNING = 12.0        # donkerte in OpenCV-niveaus boven naburig vinyl
+CD_EDGE_TOL = 6.0       # afwijking (Lab, OpenCV-schaal 0-255) waarboven een randstuk telt
 FAR_FROM_LID = 60.0   # Lab-afstand papier-klep waarboven per stuk van een zijde bijgesneden mag worden (witte klep)
 
 
-def trim_edge_lines(img, px_mm, lid_lab, max_mm=1.0, shadow_mm=2.5):
+def vinyl_edge_tone(crop, px_mm, disc):
+    """Compare the finished edge with nearby material, without moving the cut."""
+    if disc:
+        h, w = crop.shape[:2]
+        theta = np.arange(360, dtype=np.float32) * (np.pi / 180)
+        radius = min(w, h) / 2
+        # Measure the two physical bands, not three isolated pixels. Sparse
+        # radial samples alias fine grooves and can report a dark rim even
+        # when the corresponding source and output bands agree.
+        near = np.linspace(.45, 1., max(2, math.ceil(.55 * px_mm) + 1))
+        inner = np.linspace(3., 4., max(2, math.ceil(px_mm) + 1))
+        distances = np.float32(np.r_[near, inner]) * px_mm
+        radii = radius - distances[:, None]
+        x = (w - 1) / 2 + radii * np.cos(theta)
+        y = (h - 1) / 2 + radii * np.sin(theta)
+        samples = cv2.remap(crop, x.astype(np.float32), y.astype(np.float32), cv2.INTER_LINEAR)
+        valid = (samples[:, :, 3] >= 250).all(axis=0)
+        luminance = samples[:, :, :3].mean(axis=2)
+        delta = (np.median(luminance[len(near):], axis=0)
+                 - np.median(luminance[:len(near)], axis=0))
+        sectors = []
+        for k in range(12):
+            section = slice(k * 30, (k + 1) * 30)
+            if valid[section].sum() >= 24:
+                sectors.append((k * 30 + 15, float(np.quantile(delta[section][valid[section]], .8))))
+        return {'sectors': sectors}
+    near = max(1, round(.8 * px_mm))
+    start, stop = round(2.5 * px_mm), round(4.5 * px_mm)
+    measurements = {}
+    for name, view in (('top', crop), ('right', crop.transpose(1, 0, 2)[::-1]),
+                       ('bottom', crop[::-1]), ('left', crop.transpose(1, 0, 2))):
+        if view.shape[0] < stop or stop <= start:
+            continue
+        margin = round(view.shape[1] * .06)
+        values = []
+        for block in np.array_split(view[:, margin:view.shape[1] - margin], 12, axis=1):
+            if block.shape[1] == 0:
+                continue
+            near_paper = np.quantile(block[:near, :, :3].min(axis=2), .8)
+            inner_paper = np.quantile(block[start:stop, :, :3].min(axis=2), .8)
+            if near_paper >= 205 and inner_paper >= 225:
+                values.append(float(inner_paper - near_paper))
+        if values:
+            measurements[name] = values
+    return measurements
+
+
+def gradual_paper(crop, side, px_mm):
+    """Sleeve Transparant: het papier wordt naar de rand toe geleidelijk donkerder (eigen tint van het papier, vergeeld of
+    bedrukt), geen schaduw of strook achtergrond. Feit: de tint tussen 0,8 en 2 mm van de snede ligt al minstens een
+    derde van de weg naar de randtint; bij een schaduw of strook zit het hele verschil in de buitenste ±0,8 mm."""
+    view = {'top': crop, 'right': crop.transpose(1, 0, 2)[::-1], 'bottom': crop[::-1], 'left': crop.transpose(1, 0, 2)}[side]
+    n = view.shape[1]; m = view[:, int(.06 * n):int(.94 * n), :3].min(axis=2).astype(np.float32)
+    a, b, c = round(.8 * px_mm), round(2 * px_mm), round(4.5 * px_mm)
+    if m.shape[0] < c:
+        return False
+    edge_ = float(np.median(m[:a])); mid_ = float(np.median(m[a:b])); inner_ = float(np.median(m[round(2.5 * px_mm):c]))
+    if inner_ - edge_ < 3:
+        return True
+    return (inner_ - mid_) >= (inner_ - edge_) / 3
+
+
+def report_vinyl_edge_tone(result, crop, px_mm, disc):
+    measurements = vinyl_edge_tone(crop, px_mm, disc)
+    if disc:
+        findings = [f'{angle}° ({delta:.0f})' for angle, delta in measurements['sectors'] if delta >= VINYL_EDGE_WARNING]
+        note = 'record tone near the cut: darker than the nearby vinyl at '
+    else:
+        findings = [
+            f'{side} ({max(values):.0f})' for side, values in measurements.items()
+            if sum(value >= 6 for value in values) >= 2 and not gradual_paper(crop, side, px_mm)
+        ]
+        note = 'paper tone near the cut: darker than nearby paper on the '
+    if findings:
+        result['verdict'] = 'TWIJFEL'
+        result.setdefault('why', []).append(note + ', '.join(findings) + ' (levels out of 255)')
+
+
+def white_margin_shadow(view, px_mm):
+    """Find a narrow edge shadow bounded by stable, near-white blank paper."""
+    search = max(2, round(1.5 * px_mm))
+    inner = max(search + 1, round(2.5 * px_mm))
+    depth = round(4 * px_mm)
+    span = max(8, round(5 * px_mm))
+    step = max(1, round(4 * px_mm))
+    if view.shape[0] < depth or view.shape[1] < span:
+        return 0
+    candidates = []
+    for start in range(0, view.shape[1] - span + 1, step):
+        band = view[:depth, start:start + span]
+        rows = np.median(band, axis=1)
+        paper = np.median(rows[inner:], axis=0)
+        if paper[0] < 235 or np.linalg.norm(paper[1:] - 128) > 14:
+            continue
+        delta = paper[0] - rows[:, 0]
+        if np.max(np.abs(delta[search:])) > 5 or np.max(delta[:3]) < 10:
+            continue
+        dark = np.flatnonzero(delta[:search] > 8)
+        if dark.size:
+            candidates.append((start, int(dark[-1]) + 1))
+    # Confirm a continuous strip in adjacent measurements and use its typical
+    # depth. A short mark, isolated crease or printing at the edge is retained.
+    connected = [width for i, (start, width) in enumerate(candidates)
+                 if any(abs(other - start) == step and abs(other_width - width) <= .35 * px_mm
+                        for other, other_width in candidates[max(0, i-1):i+2])]
+    if len(connected) < 4:
+        return 0
+    # Before changing the rectangular cut, check that the exposed margin of
+    # the entire edge has the same blank-paper character.
+    brightness = view[inner:depth, :, 0]
+    if np.quantile(brightness, .03) < 226:
+        return 0
+    cut = min(search, int(np.ceil(np.quantile(connected, .97) + .08 * px_mm)))
+    # A straight edge shadow is constant along the edge. Printed strokes,
+    # including pale ink, vary along it. Protect those measured strokes even
+    # when they occupy too little area to affect a global paper percentile.
+    light = view[:depth, :, 0]
+    width = max(3, round(.9 * px_mm) | 1)
+    local = cv2.GaussianBlur(light, (width, 1), .25 * px_mm)
+    strokes = (local - light > 3).astype(np.uint8)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(strokes, 8)
+    for index in range(1, count):
+        x, y, w, h, area = stats[index]
+        if y < cut and y + h >= inner and w >= .15 * px_mm and area >= .04 * px_mm**2:
+            return 0
+    return cut
+
+
+def trim_white_insert_sides(image, px_mm, protected_boxes=()):
+    """Check the two upright side margins after the print has been oriented."""
+    sides = image.transpose(1, 0, 2)
+    reach = round(4 * px_mm)
+    if reach < 3 or image.shape[1] < 2 * reach:
+        return image, (0, 0)
+    near = [np.ascontiguousarray(view[:reach, :, :3]) for view in (sides, sides[::-1])]
+    left, right = (white_margin_shadow(cv2.cvtColor(view, cv2.COLOR_BGR2LAB).astype(np.float32), px_mm)
+                   for view in near)
+    # A measured text box is positive evidence of print, including sparse
+    # halftone ink that a whole-edge paper percentile can miss.
+    for x0, y0, x1, y1 in protected_boxes:
+        if x0 < left:
+            left = 0
+        if x1 > image.shape[1] - right:
+            right = 0
+    return image[:, left:image.shape[1] - right], (left, right)
+
+
+def level_white_insert_sides(image, px_mm):
+    """Use the nearby blank paper as the light reference for a shaded margin."""
+    depth = round(14 * px_mm)
+    reference = round(10 * px_mm)
+    span = round(7 * px_mm)
+    if span < 12 or image.shape[1] < 4 * depth or image.shape[0] < 4 * span:
+        return 0
+    changed = 0
+    for side in (image, image[:, ::-1]):
+        edge = side[:, :depth, :3]
+        rows = np.arange(len(edge))
+        centres, corrections = [], []
+        for start in range(0, len(edge), span):
+            band = edge[start:start + span:3]
+            centres.append(min(len(edge) - 1, start + len(band)*1.5))
+            profile = np.quantile(band, .65, axis=0).astype(np.float32)
+            paper = np.median(profile[reference:], axis=0)
+            # Require blank, neutral paper in the reference band and a
+            # broad loss of light towards the outer edge.
+            white_reference = band[:, reference:]
+            white = ((white_reference.min(axis=2) > 220)
+                     & (np.ptp(white_reference, axis=2) < 22))
+            valid = white.mean() > .92 and paper.min() >= 230
+            difference = paper - profile
+            loss = difference.mean(axis=1)
+            if (not valid or np.median(loss[:max(2,round(2*px_mm))]) < 6
+                    or np.ptp(profile[reference:].mean(axis=1)) > 5):
+                difference[:] = 0
+            corrections.append(np.clip(difference, 0, 18))
+        if not np.any(corrections):
+            continue
+        field = np.stack([np.interp(rows, centres, values) for values in
+                          np.asarray(corrections).reshape(len(centres), -1).T], axis=1)
+        field = field.reshape(len(edge), depth, 3).astype(np.float32)
+        field = cv2.GaussianBlur(field, (0, 0), max(1, .65 * px_mm))
+        distance = np.arange(depth, dtype=np.float32)
+        taper = np.clip((depth - 1 - distance) / max(1, depth-reference), 0, 1)
+        near_white = np.clip((edge.min(axis=2).astype(np.float32) - 213) / 20, 0, 1)
+        near_white *= np.clip((24 - np.ptp(edge, axis=2).astype(np.float32)) / 10, 0, 1)
+        applied = field * (near_white * taper[None, :])[..., None]
+        changed += np.count_nonzero(applied.max(axis=2) >= .5)
+        edge[:] = np.clip(np.rint(edge.astype(np.float32) + applied), 0, 255).astype(np.uint8)
+    return changed
+
+
+def scanner_shadow_on_coloured_edge(view, px_mm):
+    """Measure a long desaturated strip along a coloured cover's outer edge."""
+    depth = round(4 * px_mm)
+    length = round(5 * px_mm)
+    limit = round(1.6 * px_mm)
+    if depth <= limit or length < 4 or view.shape[1] < 10 * length:
+        return 0
+    lab = cv2.cvtColor(np.ascontiguousarray(view[:depth, :, :3]),
+                       cv2.COLOR_BGR2LAB).astype(np.float32)
+    widths = []
+    for start in range(length, lab.shape[1] - 2 * length, length):
+        rows = np.median(lab[:, start:start + length], axis=1)
+        interior = np.median(rows[round(2.1 * px_mm):], axis=0)
+        chroma = np.linalg.norm(interior[1:] - 128)
+        if chroma < 15:
+            continue
+        darkness = interior[0] - rows[:, 0]
+        desaturation = chroma - np.linalg.norm(rows[:, 1:] - 128, axis=1)
+        affected = np.flatnonzero((darkness[:limit] >= 7) & (desaturation[:limit] >= 5))
+        stable = np.max(np.abs(darkness[round(1.8 * px_mm):])) <= 6
+        if affected.size and affected[0] < .5 * px_mm and stable:
+            widths.append(affected[-1] + 1)
+    if len(widths) * length < .45 * lab.shape[1]:
+        return 0
+    trim = round(float(np.quantile(widths, .9)))
+    # Protect dark artwork on the part of the edge that would be cut.
+    if np.quantile(lab[:trim + 1, :, 0], .02) < 92:
+        return 0
+    return trim
+
+
+def inset_worn_corner(view, px_mm):
+    """Limit cropping of a worn outer strip on light, unprinted margins."""
+    limit = round(1.45 * px_mm)
+    outside = round(2.35 * px_mm)
+    depth = round(3.25 * px_mm)
+    span = round(1.5 * px_mm)
+    step = max(2, span // 2)
+    if span < 5 or view.shape[0] < depth:
+        return 0
+    lab = cv2.cvtColor(np.ascontiguousarray(view[:depth, :, :3]), cv2.COLOR_BGR2LAB)
+    # Evaluate corner wear near the ends of the side. A mark in the middle
+    # does not justify taking off an entire side.
+    reach = min(round(34 * px_mm), lab.shape[1] // 4)
+    trims = []
+    for corner in (lab[:, :reach], lab[:, -reach:]):
+        candidates = []
+        for x in range(0, reach - span + 1, step):
+            profile = np.median(corner[:, x:x + span], axis=1)
+            white = np.median(profile[outside:], axis=0)
+            if white[0] < 205 or np.linalg.norm(white[1:] - 128) > 30:
+                continue
+            dark = white[0] - profile[:, 0]
+            if dark[:limit].max() < 18 or np.max(np.abs(dark[outside:])) > 4:
+                continue
+            affected = np.flatnonzero(dark[:outside] > 6)
+            if (affected.size and affected[0] < .75 * px_mm and affected[-1] < limit
+                    and np.max(np.abs(dark[limit:outside])) <= 5):
+                candidates.append((x, affected[-1] + 1))
+        # Require a sustained marking in at least three consecutive windows.
+        xs = {x for x, width in candidates if width >= .35 * px_mm}
+        if any(x + step in xs and x + 2 * step in xs for x in xs):
+            trims.append(max(width for _, width in candidates))
+    trim = max(trims, default=0)
+    if trim:
+        margin = cv2.medianBlur(lab[:trim + 1, :, 0], 5)
+        _, _, components, _ = cv2.connectedComponentsWithStats(np.uint8(margin < 105))
+        if any(area >= max(8, round(.2 * px_mm**2)) for area in components[1:, cv2.CC_STAT_AREA]):
+            return 0
+    return int(trim)
+
+
+def trim_cover_sides(image, px_mm):
+    """Trim a measured scanner strip or bounded wear along a cover side."""
+    sides = image.transpose(1, 0, 2)
+    left = max(scanner_shadow_on_coloured_edge(sides, px_mm), inset_worn_corner(sides, px_mm))
+    right = max(scanner_shadow_on_coloured_edge(sides[::-1], px_mm), inset_worn_corner(sides[::-1], px_mm))
+    return image[:, left:image.shape[1] - right], (left, right)
+
+
+EDGE_LINE_MAX_MM = 0.5      # gebruiker 25 nov 2026: zo'n randlijn hooguit 0,5 mm wegsnijden
+EDGE_LINE_COVER = 0.90      # de lijn ligt langs (bijna) de hele zijde; drukwerk tot de rand doet dat zelden
+EDGE_LINE_DARK = 40         # zoveel L donkerder dan het lichte papier er vlak naast
+
+
+def dark_edge_line(view, px_mm):
+    """view: rijen vanaf de rand naar binnen x posities langs de zijde x BGR. Breedte in px van een smalle donkere
+    lijn die langs bijna de hele zijde precies op de snede ligt, naast licht papier; anders 0."""
+    cap = int(round(EDGE_LINE_MAX_MM * px_mm))
+    a, b = int(round(1.0 * px_mm)), int(round(2.0 * px_mm))
+    if cap < 1 or view.shape[0] < b + 1 or view.shape[1] < 50:
+        return 0
+    L = cv2.cvtColor(np.ascontiguousarray(view[:b + 1, :, :3]), cv2.COLOR_BGR2LAB)[:, :, 0].astype(np.float32)
+    L = cv2.blur(L, (5, 1))                                 # langs de zijde iets uitmiddelen (stof, korrel)
+    paper = np.median(L[a:b], axis=0)                       # het papier op 1-2 mm van de rand, per positie
+    dark = L[:cap + 3] < (paper - EDGE_LINE_DARK)[None, :]
+    inner = np.argmax(~dark, axis=0)                        # eerste lichte rij vanaf de rand
+    inner[dark.all(axis=0)] = cap + 3
+    ok = dark[:3].any(axis=0) & (paper > 150)               # lijn op de snede, naast licht papier (niet in donker drukwerk)
+    if ok.mean() < EDGE_LINE_COVER:
+        return 0
+    widths = inner[ok]
+    if np.median(widths) > cap:                             # breder dan een lijntje: een gedrukte rand, die blijft staan
+        return 0
+    return int(min(cap, np.quantile(widths, .99) + 1))
+
+
+def trim_dark_edge_lines(img, px_mm):
+    """Feit: een smalle donkere lijn (hooguit EDGE_LINE_MAX_MM) die langs bijna een hele zijde precies op de snede
+    van een lichte hoes ligt, is de kartonrand of de schaduw ervan en geen drukwerk (HNY rood back, rechts: in de
+    oorspronkelijke scans 0005/0008 al aanwezig). Per zijde weggesneden; een zijde zonder zo'n lijn blijft heel.
+    Geeft (beeld, (boven, rechts, onder, links))."""
+    t = dark_edge_line(img, px_mm)
+    bt = dark_edge_line(img[::-1], px_mm)
+    l = dark_edge_line(img.transpose(1, 0, 2), px_mm)
+    r = dark_edge_line(img.transpose(1, 0, 2)[::-1], px_mm)
+    h, w = img.shape[:2]
+    return img[t:h - bt, l:w - r], (t, r, bt, l)
+
+
+def trim_edge_lines(img, px_mm, lid_lab, max_mm=1.0, shadow_mm=2.5, cd=False):
     """Feit: wat langs de rand de kleur van de klep heeft (gemeten vlak buiten het onderdeel
     in dezelfde scan), of de schaduw ervan (donkerder en kleurlozer dan het drukwerk), is
     klep en geen drukwerk. Per zijde de buitenste rijen weghalen zolang ze dichter bij de
@@ -699,8 +1049,73 @@ def trim_edge_lines(img, px_mm, lid_lab, max_mm=1.0, shadow_mm=2.5):
         return k
     t = side(lab); bt = side(lab[::-1])
     l = side(lab.transpose(1, 0, 2)); r = side(lab.transpose(1, 0, 2)[::-1])
+    if cd:
+        # Feit (cd): langs de rand van een kaartje ligt een smal stuk (hooguit CD_EDGE_MAX_MM) dat afwijkt van het papier er vlak naast:
+        # deksel dat doorschijnt, de schaduw van de rand, de laatste mengrijen op een schuine snede. Dat is geen drukwerk. Per zijde, en per
+        # achtste deel van die zijde (het lijntje zit vaak maar op een stuk, ook in een hoek), tot waar het papier stabiel is wordt het
+        # weggesneden. Een breed wit kader wijkt niet af van wat er vlak naast ligt (het blijft aan het eind van de rand gelijk) en blijft staan.
+        views = {'t': lab, 'b': lab[::-1], 'l': lab.transpose(1, 0, 2), 'r': lab.transpose(1, 0, 2)[::-1]}
+        kmax = max(2, int(CD_EDGE_MAX_MM * px_mm)); seg = max(3, int(CD_EDGE_SEG_MM * px_mm)); padc = max(1, int(CD_EDGE_PAD_MM * px_mm))
+        def plateau_k(rows, tol=CD_EDGE_TOL):
+            if len(rows) < kmax + seg + 1:
+                return 0
+            ref = np.median(rows[kmax:kmax + seg], 0)               # het papier vlak na het smalle randstuk
+            d = np.linalg.norm(rows[:kmax] - ref, axis=1)
+            bad = np.where(d > tol)[0]
+            return int(bad.max()) + 1 + padc if bad.size else 0
+        win = max(20, int(CD_EDGE_WIN_MM * px_mm))
+        def edge_k(view, tol=CD_EDGE_TOL):
+            v = view[:kmax + seg + 2]                       # alleen de rijen vanaf de rand die ertoe doen
+            k = plateau_k(v.mean(1), tol)
+            # schuivende stukjes van CD_EDGE_WIN_MM langs de zijde (halve overlap): een lijntje dat maar over de laatste paar mm bij
+            # een hoek loopt valt weg in de mediaan van een groter stuk (Pretending back en Together Alone front, bovenrand bij de hoek)
+            for c0 in range(0, max(1, v.shape[1] - win // 2), max(1, win // 2)):
+                part = v[:, c0:c0 + win]
+                if part.shape[1] >= win // 2:
+                    k = max(k, plateau_k(part.mean(1), tol))
+            return k
+        t, bt, l, r = max(t, edge_k(views['t'])), max(bt, edge_k(views['b'])), max(l, edge_k(views['l'])), max(r, edge_k(views['r']))
+        # Ligt de rand van het kaartje aan één kant schuin ten opzichte van de snede (een paar tienden mm over de lengte), dan komt na de eerste
+        # ronde de donkere randlijn zelf aan de rand te liggen (Pretending back, Together Alone front: bovenrand bij een hoek). Een tweede en
+        # derde ronde op wat overblijft haalt die lijn weg (alleen een lijn die zeer veel donkerder is dan het papier, anders blijft de snede
+        # zoals hij is: Feet front houdt zijn witte kader); een ronde zonder afwijking doet niets.
+        for _ in range(2):
+            lc = lab[t:lab.shape[0] - bt, l:lab.shape[1] - r]
+            vc = {'t': lc, 'b': lc[::-1], 'l': lc.transpose(1, 0, 2), 'r': lc.transpose(1, 0, 2)[::-1]}
+            ek = {k_: edge_k(v_, CD_EDGE_STRONG) for k_, v_ in vc.items()}      # alleen een echte donkere lijn, geen klein verschil meer
+            if not any(ek.values()):
+                break
+            t, bt, l, r = t + ek['t'], bt + ek['b'], l + ek['l'], r + ek['r']
     h, w = img.shape[:2]
     return img[t:h - bt, l:w - r], (t, r, bt, l)
+
+
+def loose_sheet_size(small, sa):
+    """Sleeve Transparant: een los vel van een andere maat dan de standaard-insert (een A4-kaartje, een tekststrook).
+    Feit: het vel tekent zich af tegen de klep van de scanner (kleur langs de rand van het beeld) als één vorm die
+    zijn omtrekkende rechthoek bijna vult, en die aan alle vier kanten los ligt van de rand van de scan (het hele vel
+    staat erop). Geeft (lange zijde, korte zijde) in mm, of None."""
+    h, w = small.shape[:2]
+    b = max(3, int(.02 * min(h, w)))
+    lab = cv2.cvtColor(small, cv2.COLOR_BGR2LAB).astype(np.float32)
+    edge = np.concatenate([lab[:b].reshape(-1, 3), lab[-b:].reshape(-1, 3), lab[:, :b].reshape(-1, 3), lab[:, -b:].reshape(-1, 3)])
+    lid = np.median(edge, 0)
+    diff = np.linalg.norm(lab - lid, axis=2)
+    mask = ((diff > 18) & sa).astype(np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    n, lab_, st, _ = cv2.connectedComponentsWithStats(mask)
+    if n < 2:
+        return None
+    i = 1 + int(np.argmax(st[1:, 4]))
+    x, y, ww, hh, area = st[i]
+    margin = 2 * WORK_PX_MM
+    if x < margin or y < margin or x + ww > w - margin or y + hh > h - margin:
+        return None                                        # raakt de rand van de scan: niet het hele vel
+    cnt = max(cv2.findContours((lab_ == i).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)[0], key=cv2.contourArea)
+    (_, _), (rw, rh), _ = cv2.minAreaRect(cnt)
+    if rw * rh <= 0 or cv2.contourArea(cv2.convexHull(cnt)) / (rw * rh) < .93 or min(rw, rh) < 40 * WORK_PX_MM:
+        return None
+    return max(rw, rh) / WORK_PX_MM, min(rw, rh) / WORK_PX_MM
 
 
 def main():
@@ -761,8 +1176,26 @@ def main():
         eh, ev, valid, _, _ = edge_maps(small, sa, border)
         small_lab = cv2.cvtColor(small, cv2.COLOR_BGR2LAB).astype(np.float32); small_lab[:, :, 0] *= 100 / 255
         coarse = find_rect(eh, ev, valid, sizes, np.arange(-3, 3.01, 0.25), outer_wins=(fmt == 'vinyl' and not square), lab0=small_lab)
+        if coarse is None and fmt == 'vinyl' and a.part.startswith('insert'):
+            # Sleeve Transparant: geen vel van de standaardmaat, wel een los vel dat helemaal op de scan staat (A4-kaartje
+            # bij Set This Thing On Fire, tekststroken bij Hotel New York 2022): zijn eigen maat, randen precies gezocht
+            got = loose_sheet_size(small, sa)
+            if got:
+                L_, S_ = got
+                (wlo, whi), (hlo, hhi) = (L_ - 4, L_ + 4), (S_ - 4, S_ + 4)
+                xs2 = range(int(wlo * WORK_PX_MM), int(whi * WORK_PX_MM) + 1); ys2 = range(int(hlo * WORK_PX_MM), int(hhi * WORK_PX_MM) + 1)
+                sizes2 = [(x, y) for x in xs2 for y in ys2] + [(y, x) for x in xs2 for y in ys2]
+                coarse = find_rect(eh, ev, valid, sizes2, np.arange(-3, 3.01, 0.25), outer_wins=True, lab0=small_lab)
+                if coarse is not None:
+                    result['loose_sheet_mm'] = [round(L_, 1), round(S_, 1)]
         if coarse is None:
             msg = f'no {a.part} of the expected size ({wlo}-{whi} x {hlo}-{hhi} mm, {fmt}) fits in this scan'
+            # Sleeve Transparant: zeg erbij als de scans samen gewoon te klein zijn (US white boekje 291 mm: één scan
+            # van 216 x 297 mm). Dan ontbreekt een stuk; opnieuw scannen in delen die elkaar overlappen.
+            cov = sorted((small.shape[1] / WORK_PX_MM, small.shape[0] / WORK_PX_MM))
+            if cov[0] < min(wlo, hlo) or cov[1] < max(wlo, hlo):
+                msg += (f': the scans together cover only {cov[0]:.0f} x {cov[1]:.0f} mm, so part of it is missing; '
+                        f'scan it again in overlapping parts (the glass is smaller than this sheet)')
             print('final verdict: FOUT', msg)
             if a.out:
                 json.dump({'verdict': 'FOUT', 'why': [msg]}, open(a.out + '.feiten.json', 'w'))
@@ -809,6 +1242,43 @@ def main():
                 rr = ri - RIM_CUT_MM * px_mm
             else:
                 rr -= DISC_EDGE_MM * px_mm
+            if fmt.startswith('cd'):
+                # Feit (cd op een gekleurd vel): het drukwerk eindigt waar het neutrale wit of zwart overgaat in de kleur van het vel. Ligt er
+                # buiten de snede nog neutraal drukwerk, dan is de snede te klein (de binnenste sprong was de rand van de ringtekst) en/of
+                # staat het midden ernaast (What Have You Done: 2 mm te klein, midden 0,7 mm ernaast, tot 1,6 mm tekst weg). De snede volgt dan het
+                # einde van dat drukwerk. Een wit of grijs vel (chroma < 8): niets veranderen, daar is de doorzichtige rand niet te onderscheiden.
+                labimg = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+                def lab_at(xx, yy):
+                    xi, yi = int(round(xx)), int(round(yy))
+                    return labimg[yi, xi] if 0 <= xi < labimg.shape[1] and 0 <= yi < labimg.shape[0] else None
+                ring = [lab_at(X + q * math.cos(t_), Y + q * math.sin(t_)) for t_ in np.linspace(0, 2 * math.pi, 72, endpoint=False)
+                        for q in (rr + 3.0 * px_mm, rr + 3.6 * px_mm)]
+                ring = [v for v in ring if v is not None]
+                if len(ring) >= 40:
+                    sheet = np.median(np.array(ring), 0); sheet_chroma = float(np.hypot(sheet[1] - 128, sheet[2] - 128))
+                    if sheet_chroma >= CD_SHEET_CHROMA:
+                        def print_like(v):                     # neutraal (wit, zwart, grijs): veel minder gekleurd dan het vel
+                            return v is not None and float(np.hypot(v[1] - 128, v[2] - 128)) < 0.5 * sheet_chroma
+                        edge_pts, ext = [], []
+                        for t_ in np.linspace(0, 2 * math.pi, 72, endpoint=False):
+                            q = rr - 0.5 * px_mm
+                            while q < rr + CD_EXTEND_MAX_MM * px_mm and print_like(lab_at(X + (q + 0.1 * px_mm) * math.cos(t_), Y + (q + 0.1 * px_mm) * math.sin(t_))):
+                                q += 0.1 * px_mm
+                            edge_pts.append((X + q * math.cos(t_), Y + q * math.sin(t_))); ext.append((q - rr) / px_mm)
+                        if np.median(ext) > 0.3:
+                            Q = np.array(edge_pts); use = np.ones(len(Q), bool)
+                            for _ in range(5):
+                                A_ = np.c_[Q[use], np.ones(use.sum())]; D_, E_, F_ = np.linalg.lstsq(A_, -(Q[use] ** 2).sum(1), rcond=None)[0]
+                                ncx, ncy = -D_ / 2, -E_ / 2; nr = math.sqrt(max(D_ * D_ / 4 + E_ * E_ / 4 - F_, 0))
+                                res_ = np.abs(np.hypot(Q[:, 0] - ncx, Q[:, 1] - ncy) - nr); nu = res_ <= 0.4 * px_mm
+                                if nu.sum() < 20 or (nu == use).all():
+                                    break
+                                use = nu
+                            if use.sum() >= 40:
+                                print(f'cd print edge followed: centre moved {math.hypot(ncx - X, ncy - Y) / px_mm:.2f} mm, diameter {2 * rr / px_mm:.2f} -> {2 * (nr - CD_PRINT_PAD_MM * px_mm) / px_mm:.2f} mm')
+                                X, Y, rr = ncx, ncy, nr - CD_PRINT_PAD_MM * px_mm
+                                result['print_edge_followed_mm'] = round(float(np.median(ext)), 2)
+                                off = []                                    # de snede volgt nu het drukwerk: de richtingen die van de eerste cirkel afweken zijn opgelost
             if not fmt.startswith('cd'):
                 # de rand loopt soms verder door dan de eerste sprong: kleur van de achtergrond in de rand,
                 # of een geleidelijk verloop van schaduw of glans naar het vlakke vinyl
@@ -830,6 +1300,8 @@ def main():
             result['cut_circle_px'] = [round(X * F, 2), round(Y * F, 2), round(rr * F, 2)]
             result['cut_diameter_mm'] = round(2 * rr / px_mm, 2)
             result['precise_dev_mm'] = round(max([abs(d) for d in dev if d is not None] or [0]) / px_mm, 2)
+            # alleen punten binnen de cirkel kunnen in de snede vallen; punten erbuiten vallen er altijd buiten
+            result['precise_inward_mm'] = round(max([-d for d in dev if d is not None and d < 0] or [0]) / px_mm, 2)
             result['directions_measured'] = sum(d is not None for d in dev)
             measured = [d for d in dev if d is not None]
             result['directions_on_circle'] = len(measured) - len(off)
@@ -872,15 +1344,43 @@ def main():
                 return cx_, cy_, float(np.percentile(dist, 90)) if len(dist) else r_, int(use.sum())
             # feit: door het gat (en een doorzichtige naaf of een groter labelgat) zie je de klep
             top = (1.62 if fmt.startswith('cd') else 2.1) * hole_mm / 2 * px_mm; low = 0.8 * hole_mm / 2 * px_mm
-            hcx = hcy = hr = None
+            hcx = hcy = hr = None; hr_measured_ok = False
             for outer in ((True, False) if fmt.startswith('cd') else (False, True)):
                 c_ = fit_hole(outer)
                 if low < c_[2] < top and c_[3] >= 24:
-                    hcx, hcy, hr = c_[0], c_[1], c_[2]; break
+                    hcx, hcy, hr = c_[0], c_[1], c_[2]; hr_measured_ok = True; break
             if hr is None:
                 hcx, hcy, hr = hx, hy, hole_mm / 2 * px_mm
                 result.setdefault('why', []).append('centre hole: edge not clearly measured; cut at the standard size')
             hr = max(hr, hole_mm / 2 * px_mm)               # feit: het gat is nooit kleiner dan de norm (7,24 mm / cd 15 mm)
+            # Feit: het gat zit in het midden van de schijf (een plaat of cd is rond geslepen en doorboord). Een gemeten gat dat meer
+            # dan HOLE_CENTRE_MM naast het midden ligt is niet het gat maar de rand van de naaf of een schaduw (Feet On The Ground cd:
+            # 1,06 mm links; de naaf is wit doordat het deksel doorschijnt, dus de echte rand is niet te zien): dan de standaardmaat.
+            # Het gat zelf komt altijd in het midden.
+            off_c = math.hypot(hcx - n / 2, hcy - n / 2)
+            # Is de gemeten rand echt een rand? Op een witte naaf (Feet) is het een willekeurige cirkel zonder verschil binnen en buiten; bij een
+            # doorzichtige naaf op een gekleurd vel (What Have You Done, paars) is het de rand van het drukwerk, met duidelijk verschil.
+            def ring_edge(cx_, cy_, r_):
+                th = np.linspace(0, 2 * math.pi, 72, endpoint=False); dd = max(2.0, 0.3 * px_mm)
+                def at(rr):
+                    xs_ = (cx_ + rr * np.cos(th)).astype(int); ys_ = (cy_ + rr * np.sin(th)).astype(int)
+                    ok_ = (xs_ >= 0) & (xs_ < crop.shape[1]) & (ys_ >= 0) & (ys_ < crop.shape[0])
+                    return crop[ys_[ok_], xs_[ok_], :3].astype(np.float32).mean(0) if ok_.any() else np.zeros(3, np.float32)
+                return float(np.linalg.norm(at(r_ + dd) - at(r_ - dd)))
+            if (not fmt.startswith('cd')
+                    and supported_standard_hole(crop[:,:,:3],hx,hy,hole_mm/2*px_mm,hr,px_mm,hcov)):
+                result['rejected_hole_diameter_mm']=round(2*hr/px_mm,2)
+                result['hole_inner_edge_preferred']=True
+                hcx,hcy,hr=hx,hy,hole_mm/2*px_mm
+                off_c=math.hypot(hcx-n/2,hcy-n/2)
+                print('centre hole: the measured standard spindle edge is inside a separate printed ring; preserving the intervening label')
+            real_edge = hr_measured_ok and ring_edge(hcx, hcy, hr) > HOLE_EDGE_MIN
+            if fmt.startswith('cd') and off_c > HOLE_CENTRE_MM * px_mm and not real_edge:
+                hr = hole_mm / 2 * px_mm
+                result['hole_moved_mm'] = round(off_c / px_mm, 2)      # geen twijfel: het gat staat nu goed (midden, standaardmaat)
+                print(f'centre hole: the measured edge lay {off_c / px_mm:.2f} mm off the centre of the disc; the hole is always in the middle: cut at the standard size')
+            if fmt.startswith('cd') and not real_edge:
+                hcx = hcy = n / 2
             outline = np.float32([[hcx + hr * math.cos(t), hcy + hr * math.sin(t)] for t in np.linspace(0, 2 * math.pi, 180, endpoint=False)])
             hole = np.zeros((n, n), np.uint8)
             cv2.circle(hole, (int(round(hcx * 16)), int(round(hcy * 16))), int(round((hr + .1 * px_mm) * 16)), 255, -1, cv2.LINE_AA, 4)
@@ -1032,8 +1532,15 @@ def main():
             r0 = next((k for k in range(m_) if not gone(acrop[:, w_ - 1 - k].mean())), m_)
             crop = crop[t0:crop.shape[0] - b0, l0:crop.shape[1] - r0]
             # cd: geen kartonrand; alleen een haarlijn (±0,3 mm) mag eraf, een wit kader blijft
-            crop, trimmed = trim_edge_lines(crop, px_mm * F, lid_lab, *((0.3, 0.3) if fmt.startswith('cd') else ()))
+            crop, trimmed = trim_edge_lines(crop, px_mm * F, lid_lab, *((0.3, 0.3) if fmt.startswith('cd') else ()), cd=fmt.startswith('cd'))
             trimmed = tuple(x + y for x, y in zip(trimmed, (t0, r0, b0, l0)))
+            # Exact raw-to-export geometry for checks after orientation and
+            # optional source replacement. Do not infer it from rounded mm.
+            Hf, Wf = full_bgr.shape[:2]
+            geometry = cv2.getRotationMatrix2D((Wf / 2, Hf / 2), ang, 1.0)
+            geometry[:, 2] -= [int(round(L * F)) + trimmed[3],
+                               int(round(T * F)) + trimmed[0]]
+            result['raw_to_crop_px'] = geometry.tolist()
             if any(trimmed):
                 result['edge_lines_trimmed_px'] = trimmed
                 print('edge lines trimmed (top, right, bottom, left px):', trimmed)
@@ -1041,6 +1548,13 @@ def main():
             crop = swap_pixels(a.pixels, full_bgr.shape, crop, shape, result,
                                disc=(locals().get('x0g'), locals().get('y0g'), locals().get('n2')) if F > 1.0 else (locals().get('x0f'), locals().get('y0f'), locals().get('n')),
                                rect=None if shape == 'disc' else (ang, T * F, B * F, L * F, Rr * F, locals().get('trimmed', (0, 0, 0, 0)) if shape != 'disc' else None))
+        if shape == 'disc' and crop.ndim == 3 and crop.shape[2] == 4:
+            # Wat buiten de cirkel en in het gat doorzichtig is, bevat geen scan: geen kleur van het deksel of het vel meedragen
+            # (een paars vel liet het gat en de hoeken paars zien in een programma dat transparantie niet toont).
+            crop[crop[:, :, 3] == 0, :3] = 255
+        if fmt == 'vinyl' and a.part in ('insert', 'sidea', 'sideb', 'sidec', 'sided'):
+            if shape != 'disc' or crop.shape[2] == 4:
+                report_vinyl_edge_tone(result, crop, px_mm * F, shape == 'disc')
         cv2.imwrite(a.out, crop)
         result['dpi'] = round(dpi * F, 2)
         json.dump(result, open(a.out + '.feiten.json', 'w'), indent=1)

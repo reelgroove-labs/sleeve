@@ -7,3 +7,5 @@ Testresultaten/
 *.anoukproject/
 *.sleeveproject/
 Resources/Tools/sleeve_ocr
+AGENTS.md
+CLAUDE.md

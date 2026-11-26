@@ -41,8 +41,19 @@ def read(path):
         return 0.0
     for v in candidates:
         if 50 < v < 5000 and max(w, h) / v * 25.4 <= SCANNER_MAX_MM:
+            # Sleeve Transparant: is de scan op de helft van de opgeslagen resolutie precies de glasplaat (A4, ±216 x 297
+            # mm) en op de opgeslagen resolutie niet, dan staat er een verdubbelde resolutie in het bestand (Wen D'r Maar
+            # Aan 2023: 5096 x 7016 px 'op 1200 dpi', een kwart plaat; de echte scan is 600 dpi).
+            if v >= 600 and is_glass(w, h, v / 2) and not is_glass(w, h, v):
+                return v / 2
             return v
     return 0.0
+
+
+def is_glass(w, h, dpi):
+    """Is een scan van w x h pixels op deze resolutie precies de A4-glasplaat (±216 x 297 mm)?"""
+    a, b = sorted((w / dpi * 25.4, h / dpi * 25.4))
+    return abs(a - 215.8) <= 1.5 and abs(b - 297.0) <= 1.5
 
 
 def size_px(path):

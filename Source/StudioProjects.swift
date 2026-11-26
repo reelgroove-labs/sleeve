@@ -67,6 +67,10 @@ struct WorkspaceSnapshot: Codable {
     var compare: Double
     var demo: Bool
     var colourSelection:Set<UUID>? = nil
+    var enlargeLabel:Bool? = nil
+    var lightCorrection:Bool? = nil   // Sleeve Transparant
+    var colourLightness:Double? = nil
+    var colourVividness:Double? = nil
     var reviewComplete: Bool { !outputs.isEmpty && outputs.allSatisfy { reviews[$0.url.path]?.completed == true && reviews[$0.url.path]?.signature == fileFingerprint($0.url) && !$0.partial } }
 }
 struct StudioRun: Codable, Identifiable {
@@ -192,7 +196,7 @@ extension JSONEncoder {
         if busy,let session=editingSession{return session.workspace}
         var checked=reviews
         for item in outputs {checked[item.url.path]=review(for:item)}
-        return WorkspaceSnapshot(mode:mode,inputs:inputs,outputs:outputs,selectedID:selectedID,showResults:showResults,discogs:discogs,useNames:useNames,useStand:useStand,useColour:useColour,variant:variant,referenceFromDiscogs:referenceFromDiscogs,references:references,referenceURL:referenceURL,strength:strength,colourScope:colourScope,colourBatch:colourBatch,proposals:proposals,outputFolder:outputFolder,lastJobFolder:lastJobFolder,reviews:checked,warnings:warnings,logText:logText,stateText:stateText,compare:compare,demo:demo,colourSelection:colourSelection)
+        return WorkspaceSnapshot(mode:mode,inputs:inputs,outputs:outputs,selectedID:selectedID,showResults:showResults,discogs:discogs,useNames:useNames,useStand:useStand,useColour:useColour,variant:variant,referenceFromDiscogs:referenceFromDiscogs,references:references,referenceURL:referenceURL,strength:strength,colourScope:colourScope,colourBatch:colourBatch,proposals:proposals,outputFolder:outputFolder,lastJobFolder:lastJobFolder,reviews:checked,warnings:warnings,logText:logText,stateText:stateText,compare:compare,demo:demo,colourSelection:colourSelection,enlargeLabel:enlargeLabel,lightCorrection:lightCorrection,colourLightness:colourLightness,colourVividness:colourVividness)
     }
     func captureProject() -> StudioProject {StudioProject(id:projectID,title:titleForEdition,workspace:captureWorkspace(),runs:runs)}
     func restoreWorkspace(_ snapshot: WorkspaceSnapshot) {
@@ -202,6 +206,9 @@ extension JSONEncoder {
         discogs=snapshot.discogs;useNames=snapshot.useNames;useStand=snapshot.useStand;useColour=snapshot.useColour;variant=snapshot.variant
         referenceFromDiscogs=snapshot.referenceFromDiscogs;references=snapshot.references;referenceURL=snapshot.referenceURL;strength=snapshot.strength
         colourScope=snapshot.colourScope;colourBatch=snapshot.colourBatch;colourSelection=snapshot.colourSelection ?? Set((colourScope=="vinyl" ? colourCandidates : Array(colourCandidates.prefix(1))).map{$0.id});proposals=snapshot.proposals;outputFolder=snapshot.outputFolder;lastJobFolder=snapshot.lastJobFolder
+        enlargeLabel=snapshot.enlargeLabel ?? false
+        lightCorrection=snapshot.lightCorrection ?? false
+        colourLightness=snapshot.colourLightness ?? 0;colourVividness=snapshot.colourVividness ?? 1
         reviews=snapshot.reviews;warnings=snapshot.warnings;logText=snapshot.logText;stateText=snapshot.stateText;compare=snapshot.compare;demo=snapshot.demo
         cancelled=false;errorMessage=nil;startedAt=nil;measuredProgress=nil;currentPart=nil;totalParts=nil;progressPhase=""
         for item in outputs {reviews[item.url.path]=review(for:item)}

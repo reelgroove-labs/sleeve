@@ -9,9 +9,9 @@ func durationText(_ interval:TimeInterval)->String {
     return hours>0 ? String(format:"%d:%02d:%02d",hours,(seconds/60)%60,seconds%60) : String(format:"%d:%02d",seconds/60,seconds%60)
 }
 let supportedExtensions: Set<String> = ["png","jpg","jpeg","tif","tiff","bmp","webp"]
-let partChoices = ["unknown","front","back","inside","insert","insert_left","insert_right","inlay","sidea","sideb","sidec","sided","cd","cd1","cd2","sticker"]
+let partChoices = ["unknown","front","back","inside","insert","insert_left","insert_right","inlay","sidea","sideb","sidec","sided","cd","cd1","cd2","sticker","labela","labelb","labelc","labeld"]
 func partLabel(_ value: String) -> String {
-    ["unknown":"Unassigned","front":"Front","back":"Back","inside":"Inside","insert":"Insert","insert_left":"Insert Left","insert_right":"Insert Right","inlay":"Inlay","sidea":"Side A","sideb":"Side B","sidec":"Side C","sided":"Side D","cd":"CD","cd1":"CD 1","cd2":"CD 2","sticker":"Sticker"][value] ?? value
+    ["unknown":"Unassigned","front":"Front","back":"Back","inside":"Inside","insert":"Insert","insert_left":"Insert Left","insert_right":"Insert Right","inlay":"Inlay","sidea":"Side A","sideb":"Side B","sidec":"Side C","sided":"Side D","cd":"CD","cd1":"CD 1","cd2":"CD 2","sticker":"Sticker","labela":"Label A","labelb":"Label B","labelc":"Label C","labeld":"Label D"][value] ?? value
 }
 enum WorkMode: String, CaseIterable, Identifiable, Codable {
     case scans = "Scans verwerken", colour = "Kleur aanpassen", names = "Namen aanpassen"
@@ -39,6 +39,7 @@ struct MediaItem: Identifiable, Hashable, Codable {
     var scans:[String]? = nil
     var message:String? = nil
     var applied:String? = nil
+    var seamDetails:String? = nil
     var title: String { url.lastPathComponent }
 }
 struct NameProposal: Codable, Identifiable {
@@ -49,7 +50,7 @@ struct NameProposal: Codable, Identifiable {
     var mtime: Int64
     var id: String { source }
 }
-struct BridgeFile: Decodable { var path: String; var source: String?; var title: String?; var partial: Bool?; var part: String?; var verdict:String?; var why:[String]?; var choices:[String]?; var scans:[String]?; var message:String?; var applied:String?; var replace:Bool? }
+struct BridgeFile: Decodable { var path: String; var source: String?; var title: String?; var partial: Bool?; var part: String?; var verdict:String?; var why:[String]?; var choices:[String]?; var scans:[String]?; var message:String?; var applied:String?; var seamDetails:String?; var replace:Bool? }
 struct BridgeEvent: Decodable {
     var event: String
     var message: String?
@@ -98,6 +99,8 @@ final class PipeReader: @unchecked Sendable {
     @Published var discogs = ""
     @Published var useNames = true
     @Published var useStand = true
+    @Published var enlargeLabel = true    // user-approved default; stored projects keep their setting
+    @Published var lightCorrection = false   // Sleeve Transparant: lichtcorrectie per scannerkolom; standaard uit, per release gezet (Discogs 'transparent' of jouw keuze in het releasescherm)
     // Feit van de gebruiker: cd of vinyl ("auto" = uit Discogs, of cd als er een cd-vak is).
     @Published var mediaFormat = "auto"
     // Bevestigde release (Discogs): gegevens, verbeterd jaartal en verpakking
@@ -125,6 +128,8 @@ final class PipeReader: @unchecked Sendable {
     @Published var references: [MediaItem] = []
     @Published var referenceURL: URL?
     @Published var strength = 1.0
+    @Published var colourLightness = 0.0   // kleurpaneel: Helderheid in L-punten (-10...+10)
+    @Published var colourVividness = 1.0   // kleurpaneel: Felheid als factor (0,8...1,3)
     @Published var colourScope = "vinyl"
     @Published var colourBatch = false // Older saved projects.
     @Published var colourSelection:Set<UUID> = []
@@ -236,7 +241,7 @@ final class PipeReader: @unchecked Sendable {
         saveExistingProject();restoringProject=true;defer{restoringProject=false}
         panel=nil;projectID=UUID();projectURL=nil;editionTitle="";runs=[];reviews=[:];projectSaveText="Not saved yet"
         errorMessage=nil;logText="";cancelled=false;startedAt=nil;inputs=[];outputs=[];emptySlots=[];suggestStatus="";slotNotes=[:];selectedID=nil;showResults=false;discogs="";variant="";referenceURL=nil;references=[];proposals=[];colourSelection=[];demo=false;stateText="Ready for a new release";lastJobFolder=nil
-        releaseInfo=nil;releaseYear="";packaging="auto";releaseConfirmed=false;releaseStatus="";mediaFormat="auto"
+        releaseInfo=nil;releaseYear="";packaging="auto";releaseConfirmed=false;releaseStatus="";mediaFormat="auto";lightCorrection=false;enlargeLabel=true
         mode = .scans   // een nieuwe release begint altijd bij Process Scans (bleef in Adjust Color hangen)
     }
     func pickImages() {
@@ -360,20 +365,21 @@ final class PipeReader: @unchecked Sendable {
         let cache=FileManager.default.urls(for:.cachesDirectory,in:.userDomainMask)[0].appendingPathComponent("com.repriselabs.Sleeve/Jobs/"+UUID().uuidString)
         do {
             try FileManager.default.createDirectory(at:cache,withIntermediateDirectories:true)
-            var req: [String:Any] = ["action":action,"inputs":rows.map{["path":$0.url.path,"part":$0.part,"reference":$0.reference,"partial":$0.partial,"source":$0.source?.path ?? "","group":$0.group ?? ""]},"discogs":discogs.trimmingCharacters(in:.whitespacesAndNewlines),"variant":variant,"useNames":useNames,"useStand":useStand,"useColour":false,"strength":strength,"scope":colourScope,"format":mediaFormat,"year":releaseYear,"packaging":packaging]
+            var req: [String:Any] = ["action":action,"inputs":rows.map{["path":$0.url.path,"part":$0.part,"reference":$0.reference,"partial":$0.partial,"source":$0.source?.path ?? "","group":$0.group ?? ""]},"discogs":discogs.trimmingCharacters(in:.whitespacesAndNewlines),"variant":variant,"useNames":useNames,"useStand":useStand,"useColour":false,"strength":strength,"lightness":colourLightness,"vividness":colourVividness,"scope":colourScope,"format":mediaFormat,"year":releaseYear,"packaging":packaging]
+            req["labelExpandMM"] = enlargeLabel ? 1 : 0
             if let folder=outputFolder{req["output"]=folder.path}
             if let ref=referenceURL{req["reference"]=ref.path}
             if action=="namesApply" {req["proposals"]=try JSONSerialization.jsonObject(with:JSONEncoder().encode(proposals))}
             for (key,value) in extra {req[key]=value}
             if action=="scan" {req["useColour"]=false}
-            activeScanRecipe=action=="scan" ? StudioScanRecipe(inputs:rows,discogs:req["discogs"] as? String ?? "",variant:req["variant"] as? String ?? "",useNames:req["useNames"] as? Bool ?? true,useStand:req["useStand"] as? Bool ?? true,useColour:req["useColour"] as? Bool ?? false) : nil
+            activeScanRecipe=action=="scan" ? StudioScanRecipe(inputs:rows,discogs:req["discogs"] as? String ?? "",variant:req["variant"] as? String ?? "",useNames:req["useNames"] as? Bool ?? true,useStand:req["useStand"] as? Bool ?? true,useColour:req["useColour"] as? Bool ?? false,labelExpandMM:enlargeLabel ? 1 : 0) : nil
             let request=cache.appendingPathComponent("request.json");try JSONSerialization.data(withJSONObject:req,options:.prettyPrinted).write(to:request)
             componentPhaseClocks=[:];componentDetails=[:];activePartCount=1
             busy=true;measuredProgress=nil;currentPart=nil;totalParts=nil;progressPhase="Preparing";phaseStartedAt=Date();lastProgressAt=Date();progressUnitsDone=nil;progressUnitsTotal=nil;completedParts=0;progressDetail="";cancelled=false;reportedError=false;receivedComplete=false;activeAction=action;activeLogFolder=cache;startedAt=Date();logText="";warnings=[];errorMessage=nil;stateText=action=="references" ? "Fetching Discogs photos…" : "Preparing…"
             if action=="colour" {activeColourSourcePaths=Set(rows.map{$0.url.path});activeColourOutputPaths=[]}
             else if ["scan","namesApply","manualCrop"].contains(action) {outputs=[];showResults=false}
             let p=Process();let runtime=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("com.repriselabs.Sleeve/Runtime/bin/python3");p.executableURL=FileManager.default.isExecutableFile(atPath:runtime.path) ? runtime : URL(fileURLWithPath:"/usr/bin/python3");p.arguments=[resources.appendingPathComponent("studio_bridge.py").path,request.path]
-            var env=ProcessInfo.processInfo.environment;env["PYTHONUNBUFFERED"]="1";env["PYTHONDONTWRITEBYTECODE"]="1";env["OPENBLAS_NUM_THREADS"]="1";env["OMP_NUM_THREADS"]="2";env["VECLIB_MAXIMUM_THREADS"]="1";p.environment=env
+            var env=ProcessInfo.processInfo.environment;env["PYTHONUNBUFFERED"]="1";env["PYTHONDONTWRITEBYTECODE"]="1";env["OPENBLAS_NUM_THREADS"]="1";env["OMP_NUM_THREADS"]="2";env["VECLIB_MAXIMUM_THREADS"]="1";if lightCorrection{env["SLEEVE_LICHTKOLOM"]=resources.appendingPathComponent("Tools/scanner-lichtkolom.json").path}else{env.removeValue(forKey:"SLEEVE_LICHTKOLOM")};p.environment=env
             let pipe=Pipe();p.standardOutput=pipe;p.standardError=pipe;let token=UUID();currentToken=token
             let lineReader=PipeReader{[weak self] event in
                 DispatchQueue.main.async {guard let self,self.currentToken==token else{return};self.receive(event)}
@@ -438,14 +444,14 @@ final class PipeReader: @unchecked Sendable {
                 let url=URL(fileURLWithPath:file.path)
                 if let i=outputs.firstIndex(where:{$0.url==url}),file.verdict != nil {
                     // beslissing toegepast: zelfde bestand, nieuw oordeel (nieuwe id zodat het voorbeeld ververst)
-                    var item=outputs[i];item.id=UUID();item.verdict=file.verdict;item.why=file.why;item.choices=file.choices;item.message=file.message;item.applied=file.applied
+                    var item=outputs[i];item.id=UUID();item.verdict=file.verdict;item.why=file.why;item.choices=file.choices;item.message=file.message;item.applied=file.applied;item.seamDetails=file.seamDetails
                     if let scans=file.scans {item.scans=scans}
                     outputs[i]=item;reviews[url.path]=nil
                 } else if !outputs.contains(where:{$0.url==url}){
                     let source=file.source.flatMap{$0.isEmpty ? nil : URL(fileURLWithPath:$0)}
                     let part=file.part ?? inferredPart(url.lastPathComponent)
                     var item=MediaItem(url:url,part:part,source:source,partial:file.partial ?? false)
-                    item.verdict=file.verdict;item.why=file.why;item.choices=file.choices;item.scans=file.scans;item.message=file.message;item.applied=file.applied
+                    item.verdict=file.verdict;item.why=file.why;item.choices=file.choices;item.scans=file.scans;item.message=file.message;item.applied=file.applied;item.seamDetails=file.seamDetails
                     if activeAction=="colour" {mergeColourOutput(item)} else {outputs.append(item)}
                 }
             }

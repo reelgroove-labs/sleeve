@@ -72,6 +72,31 @@ def slots_for(fmt, qty, packaging, sides):
     return ['front', 'back']
 
 
+SEE_THROUGH = r'transparent|translucent|clear|crystal|see[- ]?through'
+OPAQUE = r'black|white|silver|gold|opaque|solid|metallic|picture disc'
+
+
+def transparency(fmt, formats, notes):
+    """Feit uit Discogs: is de plaat doorzichtig? 'yes', 'no' of 'unknown' (dan vraagt Sleeve het), met de gevonden tekst.
+    Formaattekst ('Transparent Green', 'Clear') telt overal; in de notities alleen een kleur vlak voor 'vinyl'
+    ('on transparent yellow vinyl'), zodat 'clear sound' e.d. niet meetelt. Zonder kleurtekst is vinyl zwart."""
+    if fmt != 'vinyl':
+        return 'no', ''
+    text = ' / '.join(f.get('text') or '' for f in formats if (f.get('name') or '').lower() == 'vinyl').strip(' /')
+    near = [m.group(0).strip() for m in re.finditer(r'(?:\b[\w\[\]-]+ ){1,4}vinyl\b', notes or '', re.I)]
+    for source in [text] + near:
+        hit = re.search(SEE_THROUGH, source, re.I)
+        if hit:
+            return 'yes', source
+    for source in [text] + near:
+        if re.search(OPAQUE, source, re.I):
+            return 'no', source
+    colours = [k for k in N.KLEUREN if re.search(r'\b' + k + r'\b', text, re.I)]
+    if not colours and not re.search(r'[a-z]', re.sub(r'\d+ ?(gram|gr|g)\b|180|audiophile|limited|numbered|edition|,', '', text, flags=re.I), re.I):
+        return 'no', 'no colour on Discogs (black vinyl)'
+    return 'unknown', text
+
+
 def info(url):
     rid = release_id(url)
     r = N.get(f'https://api.discogs.com/releases/{rid}')
@@ -88,6 +113,7 @@ def info(url):
         colour = next((k for k in N.KLEUREN if f'_{k}_' in name + '_'), '')
     except Exception:
         pass
+    see = transparency(fmt, formats, r.get('notes') or '')
     images = [im.get('uri150') or im.get('uri') for im in (r.get('images') or [])][:4]
     return {
         'id': rid, 'url': f'https://www.discogs.com/release/{rid}',
@@ -96,7 +122,7 @@ def info(url):
         'label': ', '.join(sorted({l.get('name', '') for l in r.get('labels', [])})),
         'catno': ', '.join(sorted({l.get('catno', '') for l in r.get('labels', []) if l.get('catno')})),
         'format': fmt, 'formatText': ', '.join(f'{f.get("qty", "1")} x {f.get("name", "")}' + (', ' + ', '.join(f.get('descriptions') or []) if f.get('descriptions') else '') + (f' ({f["text"]})' if f.get('text') else '') for f in formats),
-        'qty': qty, 'colour': colour, 'packaging': packaging, 'packagingLabel': LABELS[packaging],
+        'qty': qty, 'colour': colour, 'transparent': see[0], 'transparentWhy': see[1][:80], 'packaging': packaging, 'packagingLabel': LABELS[packaging],
         'packagingFromDiscogs': packaging not in ('unknown', 'sleeve') or fmt == 'vinyl',
         'sides': [s.upper() for s in sides], 'slots': slots_for(fmt, qty, packaging, sides), 'images': images,
     }

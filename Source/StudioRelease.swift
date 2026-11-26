@@ -7,6 +7,7 @@ struct ReleaseInfo: Codable, Equatable {
     var country:String; var label:String; var catno:String; var format:String; var formatText:String
     var qty:Int; var colour:String; var packaging:String; var packagingLabel:String
     var packagingFromDiscogs:Bool; var sides:[String]; var slots:[String]; var thumbs:[String]?
+    var transparent:String?; var transparentWhy:String?   // Sleeve Transparant: 'yes' / 'no' / 'unknown' uit Discogs (scan_release.transparency)
 }
 
 let packagingChoices:[(String,String)] = [("jewel","Jewel case"),("slimjewel","Slim jewel case"),("superjewel","Super Jewel Box"),
@@ -23,6 +24,7 @@ extension StudioModel {
         let names=Set(inputs.filter{!$0.reference}.map{$0.url.lastPathComponent})
         if let saved=savedReleases().first(where:{!names.isEmpty && names.isSubset(of:Set($0.files ?? []))}) {
             discogs=saved.discogs;releaseYear=saved.year;packaging=saved.packaging;mediaFormat=saved.format;releaseInfo=saved.info;releaseConfirmed=true
+            lightCorrection=saved.transparent ?? (saved.info?.transparent=="yes")
             releaseStatus="Release remembered for these scans: \(saved.info?.title ?? saved.discogs)"
             if emptySlots.isEmpty && arrangedCount==0, let parts=saved.info?.slots {for part in parts {addSlot(part:part)}}
             return
@@ -54,6 +56,7 @@ extension StudioModel {
                 if let info=event.info {
                     self.releaseInfo=info;self.releaseYear=info.year
                     self.packaging=info.packaging=="unknown" ? "unknown" : info.packaging
+                    self.lightCorrection=info.transparent=="yes"   // doorzichtig volgens Discogs: lichtcorrectie aan; bij twijfel uit tot jij kiest
                     self.releaseStatus=info.packagingFromDiscogs ? "Found on Discogs. Check the details." : "Discogs doesn't say how this release is packed. Choose the packaging."
                 }
                 if event.event=="error" {self.releaseStatus=event.message ?? "The release couldn't be loaded."}
@@ -88,7 +91,7 @@ extension StudioModel {
         releaseStatus="Release confirmed: \(info.artist) – \(info.title) (\(releaseYear))"
         if let url=releaseMemoryURL {
             let files=inputs.filter{!$0.reference}.map{$0.url.lastPathComponent}
-            let saved=SavedRelease(discogs:discogs,year:releaseYear,packaging:packaging,format:mediaFormat,info:info,files:files)
+            let saved=SavedRelease(discogs:discogs,year:releaseYear,packaging:packaging,format:mediaFormat,info:info,files:files,transparent:info.format=="vinyl" ? lightCorrection : nil)
             // andere sets in dezelfde map blijven bewaard; een set met (deels) dezelfde scans wordt vervangen
             let others=savedReleases().filter{Set($0.files ?? []).isDisjoint(with:Set(files))}
             try? JSONEncoder().encode(others+[saved]).write(to:url)
@@ -110,7 +113,7 @@ func partFromName(_ url:URL)->String? {
     return slotParts.contains(last) && last != "unknown" ? last : nil
 }
 
-struct SavedRelease: Codable {var discogs:String;var year:String;var packaging:String;var format:String;var info:ReleaseInfo?;var files:[String]?}
+struct SavedRelease: Codable {var discogs:String;var year:String;var packaging:String;var format:String;var info:ReleaseInfo?;var files:[String]?;var transparent:Bool?=nil}
 
 extension StudioModel {
     /// Bevestigde releases in de map van de scans (oude opslag zonder bestandenlijst telt niet mee).

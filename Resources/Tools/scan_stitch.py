@@ -23,7 +23,7 @@ Gebruik:
 Uitvoer: png met transparantie waar geen scan was. Daarna eventueel
 scan_cutout.py (cover/vinyl) en de watermerkstap.
 """
-import argparse, os, sys, gc, contextlib
+import argparse, os, sys, gc, contextlib, math
 from scan_progress import progress
 from scan_blend import detail_blur
 from scan_fields import GainPlane, CorrectedImage, FieldGain
@@ -82,6 +82,9 @@ def open_srgb(path, factor=1.0):
     return image
 
 
+LICHTKOLOM = None   # alleen met --lichtkolom (transparant vinyl): lichtcorrectie per scannerkolom, zie scan_lichtkolom.py
+
+
 def load_into(path,target):
     """Decode/profile once; copy RGB to mapped BGR in bounded row bands."""
     with open_srgb(path) as image:
@@ -90,12 +93,22 @@ def load_into(path,target):
             stop=min(image.height,start+256)
             with image.crop((0,start,image.width,stop)) as band:
                 target[start:stop]=cv2.cvtColor(np.asarray(band),cv2.COLOR_RGB2BGR)
+            if LICHTKOLOM is not None:
+                import scan_lichtkolom
+                scan_lichtkolom.apply(target,LICHTKOLOM,rows=(start,stop,image.height))
             flush_array_rows(target,start,stop)
 
 
 def load(path,f=1.0,consume_cache=False):
     """Read BGR in sRGB, optionally resized; no source file is modified."""
     try:
+        if LICHTKOLOM is not None:
+            import scan_lichtkolom
+            with open_srgb(path,f) as image:
+                bgr=cv2.cvtColor(np.asarray(image),cv2.COLOR_RGB2BGR)
+            if not scan_lichtkolom.apply(bgr,LICHTKOLOM):
+                print(f'lichtkolom: {os.path.basename(path)} hoort niet bij dit glas; niet gecorrigeerd',flush=True)
+            return bgr
         from scan_previews import get
         cached=get(path,f,consume=consume_cache)
         if cached is not None:return cached
@@ -356,7 +369,270 @@ def place(n, feats):
     return H, ref, W, missing
 
 
-def stitch_quality(img, masks, ks, best, height, width, scale):
+def thin_line_contrast(gray, kernel):
+    dark = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)
+    light = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
+    return dark, light
+
+
+def line_crossings(gray, width, length, horizontal, tolerance):
+    """Return dark and light line strength across the expected line position."""
+    middle = gray.shape[0] // 2
+    cross = slice(middle - tolerance, middle + tolerance + 1)
+    kernel = np.ones((width, width), np.uint8)
+    direction = np.ones((1, length) if horizontal else (length, 1), np.uint8)
+    result = []
+    for contrast in thin_line_contrast(gray, kernel):
+        line = cv2.morphologyEx(contrast, cv2.MORPH_OPEN, direction)
+        result.append(line[cross, middle] if horizontal else line[middle, cross])
+    return np.asarray(result)
+
+
+def broad_line_agreement(grays, masks, first, second, x, y, radius, horizontal,
+                         width, length, tolerance):
+    bounds = np.s_[y-radius:y+radius+1, x-radius:x+radius+1]
+    if (x < radius or y < radius or y + radius >= grays[0].shape[0]
+            or x + radius >= grays[0].shape[1]
+            or not masks[0][bounds].all() or not masks[1][bounds].all()):
+        return (-1, -1)
+    strength = np.minimum(
+        line_crossings(grays[first][bounds], width, length, horizontal, tolerance),
+        line_crossings(grays[second][bounds], width, length, horizontal, tolerance))
+    return tuple(int(row.argmax()) if row.max() >= 13 else -1 for row in strength)
+
+
+def flat_patch(gray):
+    low, high = np.percentile(gray, (5, 95))
+    return high - low <= 5 and float(gray.max()) - float(gray.min()) <= 10
+
+
+def corroborated_flat(grays, masks, ks, source, x, y, radius):
+    """Require two flat observations and no second observation of the detail."""
+    left, top = x - radius, y - radius
+    right, bottom = x + radius + 1, y + radius + 1
+    if left < 0 or top < 0 or bottom > grays[0].shape[0] or right > grays[0].shape[1]:
+        return False
+    area = np.s_[top:bottom, left:right]
+    count = 0
+    for i, k in enumerate(ks):
+        if i == source or not masks[k][area].all():
+            continue
+        if not flat_patch(grays[i][area]):
+            return False
+        count += 1
+    return count >= 2
+
+
+def seam_line_conflicts(grays, masks, ks, best, support, px_mm, locations=None, evidence=None):
+    """Find a thin, continuous dark line cut by a source change inside a cover."""
+    thickness = max(3, round(.45 * px_mm) | 1)
+    length = max(7, round(2.4 * px_mm) | 1)
+    interior = support >= .99
+    pairs = []
+    horizontal = best[:, 1:] != best[:, :-1]
+    vertical = best[1:, :] != best[:-1, :]
+    for a, k in enumerate(ks):
+        for b in range(a + 1, len(ks)):
+            other = ks[b]
+            across = ((best[:, :-1] == a) & (best[:, 1:] == b)) | ((best[:, :-1] == b) & (best[:, 1:] == a))
+            down = ((best[:-1, :] == a) & (best[1:, :] == b)) | ((best[:-1, :] == b) & (best[1:, :] == a))
+            seam = np.zeros(best.shape, bool)
+            seam[:, 1:] = horizontal & across
+            seam[1:, :] |= vertical & down
+            seam &= interior & masks[k] & masks[other]
+            if not seam.any():
+                continue
+            yy, xx = np.nonzero(seam)
+            pad = length + thickness
+            box = np.s_[max(0, yy.min() - pad):yy.max() + pad + 1, max(0, xx.min() - pad):xx.max() + pad + 1]
+            local, axes = [], []
+            for i in (a, b):
+                g = grays[i][box]
+                contrast = thin_line_contrast(g, np.ones((thickness, thickness), np.uint8))
+                hline, vline = (np.maximum(*(cv2.morphologyEx(thin, cv2.MORPH_OPEN, kernel)
+                                             for thin in contrast))
+                                for kernel in (np.ones((1, length), np.uint8),
+                                               np.ones((length, 1), np.uint8)))
+                local.append(np.maximum(hline, vline))
+                axes.append(hline >= vline)
+            # A real line can land a few pixels away in an overlapping scan.
+            # If it is visible nearby, this is a placement check, not a vanishing line.
+            tolerance = max(1, round(.32 * px_mm))
+            nearby = np.ones((2 * tolerance + 1, 2 * tolerance + 1), np.uint8)
+            left, right = local
+            only_left = (left >= 13) & (cv2.dilate(right, nearby) <= 5)
+            only_right = (right >= 13) & (cv2.dilate(left, nearby) <= 5)
+            found = seam[box] & (only_left | only_right)
+            if found.sum() >= 2:
+                pairs.append((int(k), int(other), int(found.sum())))
+                if locations is not None:
+                    y, x = np.nonzero(found)
+                    horizontal_line = np.where(only_left[y, x], axes[0][y, x], axes[1][y, x])
+                    reporting_source = np.where(only_left[y, x], a, b)
+                    x, y = x + box[1].start, y + box[0].start
+                    radius = length // 2 + thickness + tolerance
+                    flat = [corroborated_flat(grays, masks, ks, src, col, row, radius)
+                            for src, col, row in zip(reporting_source, x, y)]
+                    broad_width = max(thickness, round(.75 * px_mm) | 1)
+                    broad = [broad_line_agreement(grays, (masks[k], masks[other]), a, b,
+                                                 col, row, radius, direction, broad_width,
+                                                 length, tolerance)
+                             for col, row, direction in zip(x, y, horizontal_line)]
+                    locations[k, other] = np.column_stack((x, y, horizontal_line, flat, broad))
+                    if evidence is not None:
+                        # Sleeve Transparant: ook het stukje uit de andere scan bewaren. De lijn staat maar in één
+                        # scan (anders belicht of wazig, TA yellow 0004); volgt het resultaat de andere scan, dan klopt het.
+                        other_source = np.where(only_left[y - box[0].start, x - box[1].start], b, a)
+                        for store, chosen in (((k, other), reporting_source), (('other', k, other), other_source)):
+                            patches = []
+                            for source, col, row in zip(chosen, x, y):
+                                bounds = np.s_[row-radius:row+radius+1, col-radius:col+radius+1]
+                                if (row >= radius and col >= radius
+                                        and row+radius < best.shape[0] and col+radius < best.shape[1]):
+                                    patches.append(grays[source][bounds].copy())
+                                else:
+                                    patches.append(None)
+                            evidence[store] = patches
+    return pairs
+
+
+def faithful_source_patch(rendered, source, tolerance):
+    """Check the actual printed structure instead of requiring a straight line."""
+    rendered = cv2.GaussianBlur(rendered.astype(np.float32), (0, 0), 1.1)
+    source = cv2.GaussianBlur(source.astype(np.float32), (0, 0), 1.1)
+    margin = max(1, tolerance)
+    if min(source.shape) < 2*margin+9 or rendered.shape != source.shape:
+        return False
+    template = source[margin:-margin, margin:-margin]
+    if float(template.std()) < 5:
+        return False
+    similarity = cv2.matchTemplate(rendered, template, cv2.TM_CCOEFF_NORMED)
+    _, score, _, offset = cv2.minMaxLoc(similarity)
+    if score < .97:
+        return False
+    x, y = offset
+    sample = rendered[y:y+template.shape[0], x:x+template.shape[1]]
+    def agrees(observed):
+        residual = observed-template
+        residual -= np.median(residual)
+        contrast = float(observed.std())/max(float(template.std()), 1)
+        correlation = float(np.mean((observed-observed.mean())*(template-template.mean())))
+        correlation /= max(float(observed.std()*template.std()), 1e-6)
+        # Sleeve Transparant: de toegestane afwijking schaalt met het contrast van het drukwerk (TA yellow, met
+        # lichtcorrectie: overeenkomst .98, contrast .97-1.03, maar 6-8 niveaus korrel); minimaal de oude 4 niveaus.
+        return bool(correlation >= .97 and .9 <= contrast <= 1.1
+                    and np.quantile(np.abs(residual), .9) <= max(4, .3 * float(template.std())))
+    if agrees(sample):
+        return True
+    # Integer template matching leaves up to half a pixel of raster phase.
+    # Refine translation only; no stretching, contrast loss or weaker limits.
+    try:
+        _, correction = cv2.findTransformECC(template, sample, np.eye(2, 3, dtype=np.float32),
+                                              cv2.MOTION_TRANSLATION,
+                                              (cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, 60, 1e-6),
+                                              None, 3)
+    except cv2.error:
+        return False
+    dx, dy = correction[:, 2]
+    if max(abs(dx), abs(dy)) > .75:
+        return False
+    if x+dx < 0 or y+dy < 0 or x+dx+template.shape[1] > rendered.shape[1] or y+dy+template.shape[0] > rendered.shape[0]:
+        return False
+    yy, xx = np.indices(template.shape, dtype=np.float32)
+    refined = cv2.remap(rendered, xx+x+dx, yy+y+dy, cv2.INTER_LINEAR)
+    return agrees(refined)
+
+
+def unresolved_seam_points(output, locations, transform, px_mm, diagnostics=None, evidence=None):
+    """Check line continuity and corroborated flat paper in the rendered pixels."""
+    thickness = max(3, round(.45 * px_mm) | 1)
+    length = max(7, round(2.4 * px_mm) | 1)
+    tolerance = max(1, round(.32 * px_mm))
+    radius = length // 2 + thickness + tolerance
+    yy, xx = np.mgrid[-radius:radius + 1, -radius:radius + 1].astype(np.float32)
+    broad_width = max(thickness, round(.75 * px_mm) | 1)
+    unresolved = 0
+    for point_index, (x, y, horizontal, flat, dark_position, light_position) in enumerate(locations):
+        sx = transform[0, 0] * (xx + x) + transform[0, 1] * (yy + y) + transform[0, 2]
+        sy = transform[1, 0] * (xx + x) + transform[1, 1] * (yy + y) + transform[1, 2]
+        failed = sx.min() < 0 or sy.min() < 0 or sx.max() >= output.shape[1] - 1 or sy.max() >= output.shape[0] - 1
+        if failed:
+            unresolved += 1
+            if diagnostics is not None:
+                diagnostics.append((x, y, 'outside merged image'))
+            continue
+        patch = sample_analysis_patch(output, sx, sy, transform)
+        if patch.shape[2] == 4 and patch[:, :, 3].min() < 250:
+            unresolved += 1
+            if diagnostics is not None:
+                diagnostics.append((x, y, 'near transparent pixels'))
+            continue
+        gray = cv2.cvtColor(patch, cv2.COLOR_BGRA2GRAY)
+        strength = line_crossings(gray, thickness, length, horizontal, tolerance)
+        if strength.max() >= 13 or (flat and flat_patch(gray)):
+            continue
+        # Sleeve Transparant: rasterdruk. Feit: met het raster weggepoetst (vervaging over 0,35 mm, groter dan een rasterpunt)
+        # is er op deze plek niets te zien: geen lijn, geen rand, alleen vlak drukwerk. Dan kan een naad daar niets breken.
+        # Alleen als ook de bronscans daar niets tonen: een vlakke plek in het resultaat kan ook een verloren lijn zijn.
+        def plain(img_):
+            sm_ = cv2.GaussianBlur(np.asarray(img_, np.float32), (0, 0), max(1., .35 * px_mm))
+            c_ = sm_[thickness:-thickness, thickness:-thickness] if min(sm_.shape) > 2 * thickness + 4 else sm_
+            return float(np.percentile(c_, 95) - np.percentile(c_, 5)) <= 10
+        if evidence is not None and point_index < len(evidence):
+            src_ = evidence[point_index]
+            src_ = [q for q in (src_ if isinstance(src_, (list, tuple)) else [src_]) if q is not None]
+            if plain(gray) and src_ and all(plain(q) for q in src_):
+                continue
+            # Feit: met het raster weggepoetst (0,35 mm) toont het resultaat hetzelfde als een bronscan (foto, verloop):
+            # wat je ziet is wat er gescand is; alleen het rasterpatroon wisselt bij de naad (TGHT 2022: hoes, inserts)
+            def soft(img_):
+                return cv2.GaussianBlur(np.asarray(img_, np.float32), (0, 0), max(1., .35 * px_mm))
+            g_ = soft(gray)
+            if any(q.shape == gray.shape and (lambda d_: float(np.quantile(np.abs(d_ - np.median(d_)), .9)) <= 4)(g_ - soft(q))
+                   and float(np.corrcoef(g_.ravel(), soft(q).ravel())[0, 1]) >= .9 for q in src_ if soft(q).std() >= 2) \
+                    or any(q.shape == gray.shape and soft(q).std() < 2 and g_.std() < 2.5 for q in src_):
+                continue
+        if max(dark_position, light_position) >= 0:
+            broader = line_crossings(gray, broad_width, length, horizontal, tolerance)
+            if any(pos >= 0 and row[max(0, pos-1):pos+2].max() >= 13
+                   for pos, row in zip((dark_position, light_position), broader)):
+                continue
+        if evidence is not None and point_index < len(evidence):
+            source_patch = evidence[point_index]
+            candidates = source_patch if isinstance(source_patch, (list, tuple)) else [source_patch]
+            if any(p is not None and faithful_source_patch(gray, p, tolerance) for p in candidates):
+                continue
+        if diagnostics is not None:
+            diagnostics.append((x, y, 'line continuity not confirmed'))
+        unresolved += 1
+    return unresolved
+
+
+def sample_analysis_patch(output, sx, sy, transform):
+    """Compare at the source analysis scale, integrating native pixels first.
+
+    A bilinear point sample of a 600/1200-dpi print aliases its ink raster;
+    source evidence was already reduced before placement. This changes only the
+    inspection pixels, never the exported image or the acceptance thresholds.
+    """
+    density = max(np.linalg.norm(transform[:, 0]), np.linalg.norm(transform[:, 1]))
+    pad = max(1, math.ceil(density))
+    left, top = max(0, int(sx.min())-pad), max(0, int(sy.min())-pad)
+    right = min(output.shape[1], math.ceil(float(sx.max()))+pad+1)
+    bottom = min(output.shape[0], math.ceil(float(sy.max()))+pad+1)
+    area = output[top:bottom, left:right]
+    if density > 1.01:
+        height, width = area.shape[:2]
+        view = cv2.resize(area, (max(1, round(width/density)), max(1, round(height/density))),
+                          interpolation=cv2.INTER_AREA)
+        mx = (sx-left+.5)*(view.shape[1]/width)-.5
+        my = (sy-top+.5)*(view.shape[0]/height)-.5
+    else:
+        view, mx, my = area, sx-left, sy-top
+    return cv2.remap(view, mx.astype(np.float32), my.astype(np.float32), cv2.INTER_LINEAR)
+
+
+def stitch_quality(img, masks, ks, best, height, width, scale, support=None, px_mm=None, locations=None, evidence=None):
     """Eindcontrole van het samenvoegen, op rekenschaal. Telt plekken waar
     (1) een naad door tekst loopt en de twee deelscans daar zichtbaar
     verschoven liggen (hoes lag niet plat), en (2) de gebruikte deelscan in
@@ -395,13 +671,18 @@ def stitch_quality(img, masks, ks, best, height, width, scale):
             pair = [int(v) for v in labels[np.argsort(-counts)][:2] if v < len(ks)]
             if len(pair) < 2 or min(masks[ks[v]][sl].mean() for v in pair) < 0.95:
                 continue
-            (dx, dy), response = cv2.phaseCorrelate(grays[pair[0]][sl], grays[pair[1]][sl], window)
+            # OpenCV applies the window in-place. Keep the source observations
+            # intact for later line checks and saved final-image evidence.
+            (dx, dy), response = cv2.phaseCorrelate(grays[pair[0]][sl].copy(),
+                                                   grays[pair[1]][sl].copy(), window)
             if response < QUALITY_RESPONSE or max(abs(dx), abs(dy)) > QUALITY_WINDOW / 6:
                 continue            # geen duidelijke match (weinig contrast) of uitslag tegen de vakrand: ruis
             shift = float(np.hypot(dx, dy)) * scale
             if shift >= QUALITY_SHIFT:
                 report['seam_text_shift'] += 1
                 report['seam_text_max_px'] = round(max(report['seam_text_max_px'], shift), 1)
+    if support is not None and px_mm:
+        report['seam_line_conflicts'] = seam_line_conflicts(grays, masks, ks, best, support, px_mm, locations, evidence)
     return report
 
 
@@ -762,7 +1043,16 @@ def local_fields(warped, frames, order, px_mm, q=LOCAL_Q, log=print):
             grad = cv2.GaussianBlur(np.hypot(gx, gy), (0, 0), 1.5)
             mag = np.hypot(F[..., 0], F[..., 1])
             # betrouwbaar: waar iets te zien is en de stroom de twee scans ook echt op elkaar legt (na verschuiven klein verschil)
-            conf = (o_ & (grad > 40) & (err < 25) & (mag < LOCAL_MAX_MM * pm)).astype(np.float32)
+            # Optical flow may confuse lighting with shape when one scan
+            # casts a shadow along an opening. Require both sources to show
+            # an edge with the same direction and light-to-dark orientation.
+            bx = cv2.Sobel(gbw, cv2.CV_32F, 1, 0, ksize=3)
+            by = cv2.Sobel(gbw, cv2.CV_32F, 0, 1, ksize=3)
+            common_strength = cv2.GaussianBlur(np.hypot(bx, by), (0, 0), 1.5)
+            shared_edge = cv2.GaussianBlur(gx * bx + gy * by, (0, 0), 1.5)
+            gradient_product = cv2.GaussianBlur(np.hypot(gx, gy) * np.hypot(bx, by), (0, 0), 1.5)
+            common = (common_strength > 40) & (shared_edge > .8 * gradient_product)
+            conf = (o_ & (grad > 40) & common & (err < 25) & (mag < LOCAL_MAX_MM * pm)).astype(np.float32)
             if conf.sum() < 200:
                 continue
             wb = cv2.GaussianBlur(conf, (0, 0), sig)
@@ -864,11 +1154,11 @@ def tone_blur(x, m, sup, sigma, blur):
         return blur(x * m[..., None], sigma) / np.maximum(blur(m, sigma), 1e-6)[..., None]
     if sup is None:
         return plain()
-    inside = np.clip(2 * sup, 0, 1); sup = np.clip(2 * sup - 1, 0, 1)      # kaart: 0 buiten, 0,5 binnen de inset, 1 daarbinnen
-    ak = m * sup; sa = blur(ak, sigma)
-    t = np.clip((sa - .02) / .08, 0, 1) * inside                            # buiten de rand: de gewone toon, zoals voorheen
+    inside = np.minimum(2 * sup, 1)                                         # kaart: 0 buiten, 0,5 binnen de inset, 1 daarbinnen
+    ak = m * np.maximum(2 * sup - 1, 0); sa = blur(ak, sigma)
+    t = np.minimum(np.maximum((sa - .02) * 12.5, 0), 1) * inside            # buiten de rand: de gewone toon, zoals voorheen
     rob = blur(x * ak[..., None], sigma) / np.maximum(sa, 1e-6)[..., None]
-    if (t[m > 0] >= 1).all():                   # overal genoeg steun (het midden van het onderdeel): de gewone toon is niet nodig
+    if not ((t < 1) & (m > 0)).any():           # overal genoeg steun (het midden van het onderdeel): de gewone toon is niet nodig
         return rob
     t = t[..., None]
     return plain() * (1 - t) + rob * t
@@ -1261,7 +1551,33 @@ def flatten_paper(out, inside, sc=0.125):
     return g
 
 
-def render_full(paths, order, H, Tsh, O, f, out_small_wh, canvas_small, masks, wts, gainm, best, ks, flat, shape, source_scales=None, release_work=None, sources_ready=None, output_allocator=None,before_sources=None,fields=None,support=None):
+def masked_detail_energy(gray, valid, sigma):
+    """Measure image detail without counting the border of the scan as ink.
+
+    A Laplacian needs real neighbours on every side. Padding and the edge of
+    an aligned scan cannot provide evidence of sharper printed material.
+    """
+    interior = cv2.erode(valid.astype(np.uint8), np.ones((3, 3), np.uint8),
+                         borderType=cv2.BORDER_CONSTANT, borderValue=0).astype(np.float32)
+    energy = cv2.Laplacian(gray, cv2.CV_32F) ** 2
+    energy *= interior
+    observed = cv2.GaussianBlur(interior, (0, 0), sigma)
+    return cv2.GaussianBlur(energy, (0, 0), sigma) / np.maximum(observed, .01)
+
+
+def vinyl_spot_evidence(image, covered, sigma):
+    """Find dark spots and flat, light neutral alternatives in one aligned scan."""
+    light = image.mean(axis=2)
+    valid = cv2.erode(covered.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    coverage = cv2.GaussianBlur(valid.astype(np.float32), (0, 0), sigma)
+    nearby = cv2.GaussianBlur(light * valid, (0, 0), sigma) / np.maximum(coverage, .01)
+    deficit = nearby - light
+    neutral = image.max(axis=2) - image.min(axis=2) <= 18
+    eligible = valid & (coverage >= .98) & (nearby >= 207) & neutral
+    return light, eligible & (np.abs(deficit) <= 2.5), eligible & (deficit >= 9)
+
+
+def render_full(paths, order, H, Tsh, O, f, out_small_wh, canvas_small, masks, wts, gainm, best, ks, flat, shape, source_scales=None, release_work=None, sources_ready=None, output_allocator=None,before_sources=None,fields=None,support=None,vinyl_px_mm=None,cover_dpi=None,paper_white=None):
     """Het resultaat opnieuw opbouwen op volle scanresolutie, in blokken.
     Alles wat berekend is (uitlijning, kleurcorrectie, gewichten, welke scan
     per plek de details levert, vorm) komt van de kleine schaal; de pixels
@@ -1314,6 +1630,7 @@ def render_full(paths, order, H, Tsh, O, f, out_small_wh, canvas_small, masks, w
             A = np.array([[f, 0, (x0 + 0.5) * f - 0.5], [0, f, (y0 + 0.5) * f - 0.5]])
             return cv2.warpAffine(m, A, (w, h), flags=interp | cv2.WARP_INVERSE_MAP, borderMode=cv2.BORDER_REPLICATE)
         nty = (Hf + tile - 1) // tile; ntx = (Wf + tile - 1) // tile
+        replaced_spots = 0
         for ty in range(nty):
             for tx in range(ntx):
                 x0, y0 = tx * tile - pad, ty * tile - pad
@@ -1322,6 +1639,15 @@ def render_full(paths, order, H, Tsh, O, f, out_small_wh, canvas_small, masks, w
                 low = np.zeros((h, w, 3), np.float32); high = np.zeros((h, w, 3), np.float32)
                 acc = np.zeros((h, w), np.float32); anym = np.zeros((h, w), bool)
                 bt = sample(B_o, x0, y0, w, h, cv2.INTER_NEAREST)
+                # Require two overlapping clean readings before discarding a darker one.
+                check_spots = vinyl_px_mm is not None and len(ks) >= 3 and Z_o is not None
+                if check_spots:
+                    clean_count = np.zeros((h, w), np.uint8)
+                    darker = np.zeros((h, w), bool)
+                    clean_low = np.full((h, w), 256, np.float32)
+                    clean_high = np.zeros((h, w), np.float32)
+                    clean_pixels = np.zeros((h, w, 3), np.uint8)
+                    material = sample(Z_o, x0, y0, w, h, cv2.INTER_LINEAR) >= .45
                 for n, k in enumerate(ks):
                     pk = polys[k] - [x0, y0]
                     if pk[:, 0].max() < 0 or pk[:, 1].max() < 0 or pk[:, 0].min() > w or pk[:, 1].min() > h:
@@ -1329,15 +1655,19 @@ def render_full(paths, order, H, Tsh, O, f, out_small_wh, canvas_small, masks, w
                     moved = bool(fields) and k in fields
                     if moved:
                         # plaatselijke verschuiving (canvas, 1/LOCAL_Q schaal): uitvoerpunt p -> canvas c -> c + d -> p' -> bron
-                        yy_, xx_ = np.mgrid[0:h, 0:w].astype(np.float32); xx_ += x0; yy_ += y0
+                        # De verbinding uitvoerpunt -> bronpunt is glad (affien plus een veld op 1/LOCAL_Q schaal): op een raster van
+                        # 8 pixels uitrekenen en lineair vergroten is voor het veld hetzelfde als zijn eigen bemonstering, en 64x minder werk.
+                        g_ = 8; nh_, nw_ = h // g_ + 3, w // g_ + 3
+                        yy_, xx_ = np.mgrid[0:nh_, 0:nw_].astype(np.float32); xx_ = xx_ * g_ + x0; yy_ = yy_ * g_ + y0
                         cx_ = ((inverse_O[0, 0] * xx_ * f + inverse_O[0, 1] * yy_ * f + inverse_O[0, 2]) / LOCAL_Q).astype(np.float32)
                         cy_ = ((inverse_O[1, 0] * xx_ * f + inverse_O[1, 1] * yy_ * f + inverse_O[1, 2]) / LOCAL_Q).astype(np.float32)
                         dx_ = cv2.remap(fields[k][..., 0], cx_, cy_, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
                         dy_ = cv2.remap(fields[k][..., 1], cx_, cy_, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
                         px_ = xx_ + s * (O[0, 0] * dx_ + O[0, 1] * dy_); py_ = yy_ + s * (O[1, 0] * dx_ + O[1, 1] * dy_)
                         Mi_ = np.linalg.inv(M[k])
-                        mx_ = (Mi_[0, 0] * px_ + Mi_[0, 1] * py_ + Mi_[0, 2]).astype(np.float32)
-                        my_ = (Mi_[1, 0] * px_ + Mi_[1, 1] * py_ + Mi_[1, 2]).astype(np.float32)
+                        up_ = np.float32([[1.0 / g_, 0, 0], [0, 1.0 / g_, 0]])
+                        mx_ = cv2.warpAffine((Mi_[0, 0] * px_ + Mi_[0, 1] * py_ + Mi_[0, 2]).astype(np.float32), up_, (w, h), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP, borderMode=cv2.BORDER_REPLICATE)
+                        my_ = cv2.warpAffine((Mi_[1, 0] * px_ + Mi_[1, 1] * py_ + Mi_[1, 2]).astype(np.float32), up_, (w, h), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP, borderMode=cv2.BORDER_REPLICATE)
                         hk, wk_ = srcs[k].shape[:2]; e_ = 6 / source_scales[k] if source_scales is not None else 6 * s
                         # de omtrek van de scan verschuift mee: geldig is waar de verschoven plek in de scan ligt
                         # (anders bleef aan een scanrand een reepje tot ±0,7 mm leeg)
@@ -1355,28 +1685,50 @@ def render_full(paths, order, H, Tsh, O, f, out_small_wh, canvas_small, masks, w
                         mk = (fr > 0) & (sample(V_o[k], x0, y0, w, h, cv2.INTER_NEAREST) > 0)
                     if not mk.any():
                         continue
+                    # de scherpe pixels komen alleen uit de gekozen scan; een scan die hier niet gekozen is levert alleen de
+                    # grove toon (30 px of meer uitgesmeerd): daar is de goedkope interpolatie genoeg
+                    winner = (bt == n) & mk
+                    interp_ = cv2.INTER_LANCZOS4 if winner.any() else cv2.INTER_LINEAR
                     if moved:
-                        im = cv2.remap(srcs[k], mx_, my_, cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_REPLICATE).astype(np.float32)
+                        im = cv2.remap(srcs[k], mx_, my_, interp_, borderMode=cv2.BORDER_REPLICATE).astype(np.float32)
                         mx_ = my_ = None
                     else:
-                        im = cv2.warpAffine(srcs[k], (T @ M[k])[:2], (w, h), flags=cv2.INTER_LANCZOS4,
+                        im = cv2.warpAffine(srcs[k], (T @ M[k])[:2], (w, h), flags=interp_,
                                             borderMode=cv2.BORDER_REPLICATE).astype(np.float32)
+                    original = im.copy() if paper_white and k in paper_white else None
                     if isinstance(G_o[k],tuple):
                         plane_k,field_k=G_o[k]
                         if plane_k is not None:im *= plane_k.output_block(inverse_O,f,x0,y0,w,h,out_small_wh)
                         im *= sample(field_k, x0, y0, w, h, cv2.INTER_LINEAR)[..., None]
                     elif G_o[k] is not None:
                         im *= G_o[k].output_block(inverse_O,f,x0,y0,w,h,out_small_wh) if isinstance(G_o[k],GainPlane) else sample(G_o[k], x0, y0, w, h, cv2.INTER_LINEAR)
+                    if original is not None:
+                        from scan_paper_light import preserve_white
+                        im = preserve_white(original, im, paper_white[k])
+                        original = None
+                    if check_spots:
+                        light, clean, dark = vinyl_spot_evidence(im, mk, max(1.2, .34 * vinyl_px_mm))
+                        clean &= material
+                        darker |= dark & material
+                        clean_count += clean
+                        chosen = clean & (light >= clean_high)
+                        clean_pixels[chosen] = np.clip(im[chosen] + .5, 0, 255).astype(np.uint8)
+                        np.minimum(clean_low, light, out=clean_low, where=clean)
+                        np.maximum(clean_high, light, out=clean_high, where=clean)
                     mf = mk.astype(np.float32)
                     wk = (np.maximum(sample(W_o[k], x0, y0, w, h, cv2.INTER_LINEAR), 0) + 1e-4) * mf
-                    winner = (bt == n) & mk
-                    lk = tone_blur(im, mf, None if Z_o is None else np.clip(sample(Z_o, x0, y0, w, h, cv2.INTER_LINEAR), 0, 1), sig, detail_blur)
+                    lk = tone_blur(im, mf, None if Z_o is None else sample(Z_o, x0, y0, w, h, cv2.INTER_LINEAR), sig, detail_blur)
                     win = cv2.GaussianBlur(winner.astype(np.float32), (0, 0), 2 * s) if winner.any() else None
                     low += lk * wk[..., None]; acc += wk
                     if win is not None:
                         high += (im - lk) * win[..., None]
                     anym |= mk
                 res = low / np.maximum(acc, 1e-6)[..., None] + high
+                if check_spots:
+                    repair = (clean_count >= 2) & darker & (clean_high - clean_low <= 5)
+                    repair &= clean_low - res.mean(axis=2) >= 4
+                    replaced_spots += int(repair[pad:h-pad, pad:w-pad].sum())
+                    res[repair] = clean_pixels[repair]
                 if F_o is not None:
                     res *= sample(F_o, x0, y0, w, h, cv2.INTER_LINEAR)[..., None]
                 blk = np.zeros((h, w, 4), np.uint8)
@@ -1386,6 +1738,16 @@ def render_full(paths, order, H, Tsh, O, f, out_small_wh, canvas_small, masks, w
             flush_array_rows(out,ty*tile,min(Hf,(ty+1)*tile))
             srcs.space.committed((min(Hf,(ty+1)*tile)-ty*tile)*Wf*4)
             print(f'  {int(100 * (ty + 1) / nty)}%', flush=True)
+        if replaced_spots:
+            print(f'NOTE: vinyl spots replaced from overlapping scans: {replaced_spots} pixels', flush=True)
+        if cover_dpi and len(ks) > 1:
+            from scan_line_source import repair_lines
+            progress('Checking interrupted lines against original scans')
+            repaired = repair_lines(out, [srcs[k] for k in ks],
+                                    [np.linalg.inv(M[k])[:2] for k in ks], cover_dpi)
+            if repaired:
+                print(f'NOTE: cover lines restored from overlapping scans: {len(repaired)} sections',
+                      flush=True)
         return out
 
 
@@ -1481,6 +1843,9 @@ def main_with_resources(resources,lease=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('uitvoer'); p.add_argument('delen', nargs='+')
     p.add_argument('--geen-kleur', action='store_true')
+    p.add_argument('--niet-op-vinyl', default='', help='deze scan (bestandsnaam) alleen gebruiken waar geen andere scan ligt (Sleeve Transparant: labelscan)')
+    p.add_argument('--belichting-alleen', default='', help='met --geen-kleur: alleen deze scan (bestandsnaam) gelijktrekken met de andere (Sleeve Transparant)')
+    p.add_argument('--lichtkolom', default=None, help='transparant vinyl: lichtcorrectie per scannerkolom uit dit profiel (scan_lichtkolom.py)')
     p.add_argument('--rechtop',action='store_true',help=argparse.SUPPRESS)
     p.add_argument('--snelle-tussenbestanden',action='store_true',help=argparse.SUPPRESS)
     p.add_argument('--referentie', type=int)
@@ -1490,6 +1855,11 @@ def main_with_resources(resources,lease=None):
     p.add_argument('--klein', action='store_true', help='output at ~300 dpi (fast) instead of full scan resolution')
     p.add_argument('--vorm', choices=['auto', 'hoes', 'plaat', 'geen', 'ruw'], default='auto', help='hoes = square, plaat = round, geen = by color only, ruw = whole scans, no cropping (default: decide automatically)')
     a = p.parse_args()
+    if a.lichtkolom:
+        import scan_lichtkolom
+        global LICHTKOLOM
+        LICHTKOLOM=scan_lichtkolom.load_profile(a.lichtkolom)
+        print(f'lichtkolom: profiel {a.lichtkolom} ({len(LICHTKOLOM["columns"])} kolommen)',flush=True)
     cv2.setNumThreads(2)
     if len(a.delen) < 2:
         sys.exit('at least two partial scans needed')
@@ -1503,7 +1873,12 @@ def main_with_resources(resources,lease=None):
     # Reserve the larger of preparation and full-source decoding before allocating.
     # Admission only shrinks later, so concurrent workers cannot deadlock upgrading.
     reserve=max(29+max(0,len(a.delen)-4)*3, int(np.ceil((max_source_pixels*8+512*1024**2)/(64*1024**2))))
-    lease=resources.enter_context(MemoryLease(min(70,reserve),phase='Opening partial scans'))
+    if a.toon_format == 'vinyl' and reserve > int(os.environ.get('SLEEVE_MEMORY_SLOTS', '72')):
+        for im in metadata: im.close()
+        raise ValueError('These scans cannot be prepared safely with the available memory; '
+                         'process fewer scans together. No lower-resolution export was made.')
+    weight = reserve if a.toon_format == 'vinyl' else min(70, reserve)
+    lease=resources.enter_context(MemoryLease(weight,phase='Opening partial scans'))
     import scan_dpi
     dpis = [scan_dpi.read(path) for path in a.delen]          # feit: EXIF/JFIF goed gelezen (scan_dpi)
     ref_dpi = max(dpis) if all(50<d<5000 for d in dpis) else None
@@ -1602,9 +1977,14 @@ def main_with_resources(resources,lease=None):
         frames[k] = cv2.warpAffine(fr, M, size, flags=cv2.INTER_NEAREST) > 0
 
     fields = {}; support = None
-    if LOCAL_ALIGN and a.vorm == 'ruw' and not a.plaat_onderdeel and len(order) > 1:
+    # Isolated research switch: never enabled by the app or ordinary pipeline.
+    groove_probe = a.plaat_onderdeel and os.environ.get('SLEEVE_GROOVE_FLOW_PROBE') == '1'
+    if LOCAL_ALIGN and a.vorm == 'ruw' and (not a.plaat_onderdeel or groove_probe) and len(order) > 1:
         progress('Laying partial scans on each other locally')
-        fields = local_fields(warped, frames, order, px_mm, log=lambda t: print(t, flush=True))
+        alignment_images = {k: faint_print(warped[k]) for k in order} if groove_probe else warped
+        fields = local_fields(alignment_images, frames, order, px_mm, log=lambda t: print(t, flush=True))
+        if groove_probe:
+            del alignment_images
         for k, d in fields.items():
             warped[k] = apply_field(warped[k], d, LOCAL_Q, cv2.INTER_LINEAR)
             frames[k] = apply_field(frames[k].astype(np.uint8), d, LOCAL_Q, cv2.INTER_NEAREST) > 0
@@ -1666,6 +2046,24 @@ def main_with_resources(resources,lease=None):
     img={k:CorrectedImage(warped[k]) for k in ks}
     wts={k:work.put(('weight',k),feather_weight(masks[k])) for k in ks}
     gainm={}
+    paper_white={}
+    if a.toon_format == 'vinyl' and a.toon_onderdeel == 'insert' and len(ks)>1:
+        from scan_paper_light import agreement,paper_samples
+        qw,qh=max(1,width//4),max(1,height//4)
+        previews=[];preview_masks=[]
+        for k in ks:
+            pixels,covered=paper_samples(img[k].raw,masks[k],width,height)
+            previews.append(pixels);preview_masks.append(covered)
+            drop_array_pages(img[k].raw)
+        paper_diagnostics={}
+        paper=agreement(previews,preview_masks,(px_mm or 1)/4,paper_diagnostics)
+        print('PAPER_WHITE_CHECK: '+__import__('json').dumps(paper_diagnostics),flush=True)
+        if paper:
+            for k,anchor in zip(ks,paper['white_anchors']):
+                img[k].white_anchor=anchor
+                paper_white[k]=anchor
+            print('PAPER_WHITE: '+__import__('json').dumps(paper),flush=True)
+        previews=preview_masks=None
     progress('Matching exposure between partial scans',0,len(ks))
     glass_path=os.path.join(os.path.dirname(os.path.abspath(a.delen[0])),GLASS_FILE)
     if not a.geen_kleur and len(ks)>1 and not a.plaat_onderdeel:
@@ -1682,8 +2080,13 @@ def main_with_resources(resources,lease=None):
             glass_apply(img,ks,H,Tsh,a_sizes,height,width,stored['pattern'])
             pat=np.asarray(stored['pattern'])
             print(f'scanner light pattern from the sleeve scans in this folder: {100*(pat.min()-1):+.1f}% to {100*(pat.max()-1):+.1f}%',flush=True)
-    if not a.geen_kleur:
+    only=[k for k in ks if a.belichting_alleen and os.path.basename(a.delen[k])==a.belichting_alleen] if a.belichting_alleen else []
+    if not a.geen_kleur or only:
         done=[ref];todo=[k for k in ks if k!=ref]
+        if only:
+            # Sleeve Transparant: alleen deze scan (de labelscan, vaak uit een andere sessie) gelijktrekken met de rest;
+            # de andere deelscans houden hun belichting (bij doorzichtig vinyl trok het gelijktrekken een hele scan donkerder)
+            done=[k for k in ks if k not in only];todo=list(only)
         while todo:
             acc=sum(wts[d] for d in done);cm=acc>0;work.drop_pages()
             comp=None
@@ -1702,6 +2105,10 @@ def main_with_resources(resources,lease=None):
             done.append(k);todo.remove(k);work.drop_pages()
             progress('Matching exposure between partial scans',len(done),len(ks))
         comp=acc=cm=None;work.discard(('composite',0))
+        for k in only:                                     # Sleeve Transparant: welke belichting de labelscan kreeg (logboek)
+            g_=img[k].gain
+            if isinstance(g_,FieldGain):g_=g_.plane
+            if isinstance(g_,GainPlane):print('label scan exposure: %s x%s'%(os.path.basename(a.delen[k]),'/'.join('%.3f'%float(np.exp(c[0])) for c in g_.coefficients[::-1])),flush=True)
     if not a.geen_kleur and len(ks)>1:
         for k in ks:
             if isinstance(img[k].gain,FieldGain):gainm[k]=img[k].gain
@@ -1742,7 +2149,9 @@ def main_with_resources(resources,lease=None):
             y1=min(height,y0+768);top=max(0,y0-102);bottom=min(height,y1+102);m=None
             for k in ks:
                 g=cv2.cvtColor(np.clip(img[k][top:bottom],0,255).astype(np.uint8),cv2.COLOR_BGR2GRAY).astype(np.float32)
-                sh=cv2.GaussianBlur(cv2.Laplacian(g,cv2.CV_32F)**2,(0,0),SHARP_SIGMA_MM*px_mm if px_mm else 25)[y0-top:y1-top:4,::4]
+                sigma = SHARP_SIGMA_MM*px_mm if px_mm else 25
+                sh = (masked_detail_energy(g, masks[k][top:bottom], sigma)
+                      if a.toon_format == 'vinyl' else cv2.GaussianBlur(cv2.Laplacian(g,cv2.CV_32F)**2,(0,0),sigma))[y0-top:y1-top:4,::4]
                 sh[~masks[k][y0:y1:4,::4]]=0
                 m=sh if m is None else np.maximum(m,sh)
                 work.drop_pages()
@@ -1750,15 +2159,32 @@ def main_with_resources(resources,lease=None):
         tops=np.concatenate(tops) if tops else np.zeros(0,np.float32)
         floor=float(np.percentile(tops,40))*3.0 if tops.size else 0.0
         tops=None
+    # Sleeve Transparant (--niet-op-vinyl): deze scan (de labelscan) levert alleen nog waar geen andere scan ligt; het label
+    # zelf komt er later in (scan_feitenroute.paste_label). Een labelscan uit een andere sessie lag 180 graden gedraaid; daar
+    # keert de schaduw van de groeven om en gaf hij groefsprongen in het vinyl (Together Alone geel A, 20 nov).
+    excl={k for k in ks if a.niet_op_vinyl and os.path.basename(a.delen[k])==a.niet_op_vinyl and len(ks)>1}
+    if excl:
+        # alleen als die scan anders ligt dan de rest (meer dan 20 graden gedraaid): dan klopt de groefschaduw niet
+        ang=lambda k:math.degrees(math.atan2(float(H[k][1][0]),float(H[k][0][0])))
+        rest=[ang(j) for j in ks if j not in excl]
+        mid=math.degrees(math.atan2(np.mean([math.sin(math.radians(v)) for v in rest]),np.mean([math.cos(math.radians(v)) for v in rest])))
+        turned={k:abs((ang(k)-mid+180)%360-180) for k in excl}
+        excl={k for k,v in turned.items() if v>20}
+        print(('label scan not used on the vinyl where other scans lie: %s (turned %.0f degrees against the other scans)' if excl else
+               'label scan lies like the other scans (%s, %.0f degrees): also used on the vinyl')%(a.niet_op_vinyl,max(turned.values())),flush=True)
     # Keep the same 102-row convolution halo; wider bands avoid recomputing it.
     for y0 in range(0,height,768):
         y1=min(height,y0+768);top=max(0,y0-102);bottom=min(height,y1+102)
         shs=[];deps=[]
+        others={k:np.logical_or.reduce([masks[j][y0:y1] for j in ks if j!=k]) for k in excl}
         for n,k in enumerate(ks):
             g=cv2.cvtColor(np.clip(img[k][top:bottom],0,255).astype(np.uint8),cv2.COLOR_BGR2GRAY).astype(np.float32)
             # scherpte over ±0,7 mm: breder telde de schaduwlijn langs de rand van een hoes mee als 'scherp' (de wazige
             # scan won daar de tekst, Urban Solitude back)
-            sh=cv2.GaussianBlur(cv2.Laplacian(g,cv2.CV_32F)**2,(0,0),SHARP_SIGMA_MM*px_mm if px_mm else 25)[y0-top:y1-top]
+            sigma = SHARP_SIGMA_MM*px_mm if px_mm else 25
+            paper_detail = not a.plaat_onderdeel and a.toon_format == 'vinyl'
+            sh = (masked_detail_energy(g, masks[k][top:bottom], sigma)
+                  if paper_detail else cv2.GaussianBlur(cv2.Laplacian(g,cv2.CV_32F)**2,(0,0),sigma))[y0-top:y1-top]
             sh[~masks[k][y0:y1]]=-1.0
             shs.append(sh)
             r0=y0//q;r1=min(depth[n].shape[0],(y1+q-1)//q+1)
@@ -1769,10 +2195,14 @@ def main_with_resources(resources,lease=None):
                 # hoes: buiten tekst de keuze van 0.5.28 (scherpte over ±25 px, gewogen naar de afstand tot de
                 # scanrand). De diepste scan kiezen verlegde de gevonden hoesrand 1-1,4 mm waar een hoes niet
                 # vlak lag (Deena front, Queen-insert, vaste toets 13 nov).
-                s25=cv2.GaussianBlur(cv2.Laplacian(g,cv2.CV_32F)**2,(0,0),25)[y0-top:y1-top]
+                s25 = (masked_detail_energy(g, masks[k][top:bottom], 25)
+                       if paper_detail else cv2.GaussianBlur(cv2.Laplacian(g,cv2.CV_32F)**2,(0,0),25))[y0-top:y1-top]
                 d=wts[k][y0:y1]*np.sqrt(s25+1.0);d[~masks[k][y0:y1]]=-1.0;s25=None
+            if k in excl:
+                sh[others[k]&masks[k][y0:y1]]=-.5;d[others[k]&masks[k][y0:y1]]=-.5   # alleen als laatste keus (-1 = niet gescand)
             deps.append(d)
             work.drop_pages()
+        others=None
         S_=np.stack(shs);D_=np.stack(deps)
         order_=np.argsort(S_,0)
         first=np.take_along_axis(S_,order_[-1:],0)[0];second=np.take_along_axis(S_,order_[-2:-1],0)[0] if len(ks)>1 else np.zeros_like(first)
@@ -1827,8 +2257,6 @@ def main_with_resources(resources,lease=None):
             progress('Levelling tone across the seams')
             if SEAM_LEVEL and seam_level(img,masks,ks,best,height,width,px_mm,log=lambda t:print(t,flush=True)):
                 for k in ks:gainm[k]=img[k].gain
-        quality=stitch_quality(img,masks,ks,best,height,width,1.0/f)
-        print('SLEEVE_QUALITY '+__import__('json').dumps(quality),flush=True)
     value=coherent=share=better=None
     # Accumulate one band across all sources, then write the byte output directly.
     # Per-pixel source order and float32 arithmetic match the mapped-buffer path.
@@ -1879,6 +2307,13 @@ def main_with_resources(resources,lease=None):
         out0=am0=None
         print(f'tone: plain mix {t_1-t_0:.0f}s, edge search {_t.time()-t_1:.0f}s',flush=True)
         if support is None:print('tone: no edge found for the '+a.toon_onderdeel+'; measured over everything each scan sees',flush=True)
+    seam_locations = {}
+    seam_evidence = {}
+    if len(ks) > 1:
+        audit_lines = a.toon_format == 'vinyl' and not a.plaat_onderdeel
+        quality = stitch_quality(img, masks, ks, best, height, width, 1.0 / f,
+                                 support if audit_lines else None, px_mm, seam_locations, seam_evidence)
+        print('SLEEVE_QUALITY ' + __import__('json').dumps(quality), flush=True)
     if f<1 and not a.klein and a.vorm=='ruw':
         # bij volle resolutie vervangt render_full dit kleine beeld; alleen de dekking (bijsnijden en maat) blijft nodig: niet mengen
         anymask=np.zeros((height,width),bool)
@@ -1928,7 +2363,11 @@ def main_with_resources(resources,lease=None):
             work.keep_only(set())
             if lease is not None:lease.resize(field_units)
         out = render_full(a.delen, order, H, Tsh, O, f, out_wh, size,
-                          masks, wts, gainm, best, ks, flat, shape, source_scales, release_work=release_preparation,sources_ready=lambda:lease.resize(min(lease.weight,12+max(0,len(ks)-4))) if lease is not None else None,output_allocator=lambda shape:work.empty(('full-output',0),shape,np.uint8),before_sources=lambda:lease.grow(decoder_units,phase='Opening original scans') if lease is not None else None,fields=fields,support=support)
+                          masks, wts, gainm, best, ks, flat, shape, source_scales, release_work=release_preparation,sources_ready=lambda:lease.resize(min(lease.weight,12+max(0,len(ks)-4))) if lease is not None else None,output_allocator=lambda shape:work.empty(('full-output',0),shape,np.uint8),before_sources=lambda:lease.grow(decoder_units,phase='Opening original scans') if lease is not None else None,fields=fields,support=support,
+                          vinyl_px_mm=ref_dpi / 25.4 if a.plaat_onderdeel and a.toon_format == 'vinyl' and ref_dpi else None,
+                          cover_dpi=ref_dpi if a.toon_onderdeel == 'front' and a.toon_format == 'vinyl'
+                          and os.environ.get('SLEEVE_COVER_LINE_SOURCE', '1') == '1' else None,
+                          paper_white=paper_white)
         masks=wts=gainm=best=flat=None
         gc.collect()
     # Full source maps and tile buffers have gone. Flushed output bytes can wait
@@ -1956,6 +2395,35 @@ def main_with_resources(resources,lease=None):
             gc.collect()
             final_lease.release()
             final_lease=resources.enter_context(MemoryLease(encode_units,phase='Saving merged image'))
+    if seam_locations:
+        # O maps the analysis canvas to the cropped merge. The full renderer
+        # uses that same mapping at native scan resolution.
+        transform = O[:2] / (f if f < 1 and not a.klein else 1)
+        diagnostics_dir = os.environ.get('SLEEVE_SEAM_DIAGNOSTICS_DIR')
+        diagnostics = [] if diagnostics_dir else None
+        for (k, other), points in seam_locations.items():
+            unresolved = [] if diagnostics_dir else None
+            ev_ = seam_evidence.get((k, other)); ev2 = seam_evidence.get(('other', k, other))
+            if ev_ is not None and ev2 is not None and len(ev2) == len(ev_):
+                ev_ = [(p, q) for p, q in zip(ev_, ev2)]
+            count = unresolved_seam_points(out, points, transform, px_mm, unresolved, ev_)
+            if unresolved:
+                for x, y, reason in unresolved:
+                    center = transform @ [x, y, 1]
+                    diagnostics.append((center, reason, os.path.basename(a.delen[k]),
+                                        os.path.basename(a.delen[other])))
+            names = f'{os.path.basename(a.delen[k])} / {os.path.basename(a.delen[other])}'
+            if len(points) > count:
+                print(f'SEAM_CHECK: {names} ({len(points) - count} source differences resolved in merged image)', flush=True)
+            if count:
+                print(f'NOTE: cover line changes at a seam: {names} ({count} unconfirmed locations)', flush=True)
+        if diagnostics:
+            from scan_seam_probe import write_seam_diagnostics
+            folder = write_seam_diagnostics(diagnostics_dir, a.toon_onderdeel, out, diagnostics, ref_dpi)
+            from scan_seam_probe import write_source_evidence
+            write_source_evidence(folder, seam_locations, seam_evidence, transform, px_mm,
+                                  {k: os.path.basename(a.delen[k]) for k in ks})
+            print(f'SEAM_DETAILS: {folder}', flush=True)
     if a.rechtop and square is not None:
         out=upright_output(out,work)
     progress('Saving merged image')

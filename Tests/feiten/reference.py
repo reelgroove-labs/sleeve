@@ -200,7 +200,8 @@ def main():
                     print(f"   DIFFERENT {got[k]['part']}: made, but not in the reference"); bad += 1
                 else:
                     diff = compare(want[k], got[k])
-                    print(f"   {'DIFFERENT' if diff else 'same     '} {got[k]['part']:<8} {got[k]['verdict']:<8} {got[k]['size_mm']}" + ('  | ' + '; '.join(diff) if diff else ''))
+                    print(f"   {'DIFFERENT' if diff else 'same     '} {got[k]['part']:<8} {got[k]['verdict']:<8} {got[k]['size_mm']}" + ('  | ' + '; '.join(diff) if diff else '')
+                          + (f"  | WHY {'; '.join(got[k]['why'])[:240]}" if got[k]['verdict'] != 'GOED' and got[k].get('why') and not any(d_.startswith('verdict') for d_ in diff) else ''))
                     bad += bool(diff)
         print(f'   ({time.time() - t0:.0f} s)', flush=True)
     if a.command == 'run':

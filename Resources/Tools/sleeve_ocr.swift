@@ -19,6 +19,21 @@ if CommandLine.arguments.contains("--boxes") || CommandLine.arguments.contains("
   }
   exit(0)
 }
+if CommandLine.arguments.contains("--faces") {
+  // gebruik: sleeve_ocr <png> --faces -> JSON: per gezicht kanteling (roll, graden), yaw, zekerheid, grootte (deel van het beeld)
+  let url = URL(fileURLWithPath: CommandLine.arguments[1])
+  guard let img = NSImage(contentsOf: url), let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { exit(1) }
+  let req = VNDetectFaceRectanglesRequest()
+  req.revision = VNDetectFaceRectanglesRequestRevision3
+  try? VNImageRequestHandler(cgImage: cg, orientation: .up, options: [:]).perform([req])
+  var faces: [[String: Double]] = []
+  for f in req.results ?? [] {
+    faces.append(["roll": (f.roll?.doubleValue ?? 999) * 180 / .pi, "yaw": (f.yaw?.doubleValue ?? 0) * 180 / .pi,
+                  "confidence": Double(f.confidence), "w": Double(f.boundingBox.width), "h": Double(f.boundingBox.height)])
+  }
+  if let d = try? JSONSerialization.data(withJSONObject: faces), let t = String(data: d, encoding: .utf8) { print(t) }
+  exit(0)
+}
 if CommandLine.arguments.contains("--identify") {
   let url = URL(fileURLWithPath: CommandLine.arguments[1])
   guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache:false] as CFDictionary),

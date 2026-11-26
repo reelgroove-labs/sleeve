@@ -59,6 +59,18 @@ struct ReleaseConfirmSheet:View {
                 row("Country",info.country);row("Label",info.label);row("Catalog number",info.catno)
                 row("Format",info.formatText)
                 if !info.colour.isEmpty {row("Color",info.colour)}
+                if info.format=="vinyl" {
+                    GridRow {
+                        Text("Transparent vinyl").foregroundStyle(.secondary)
+                        VStack(alignment:.leading,spacing:4) {
+                            Picker("Transparent vinyl",selection:$model.lightCorrection) {Text("Yes").tag(true);Text("No").tag(false)}.labelsHidden().pickerStyle(.segmented).frame(width:120)
+                            let unsure=info.transparent==nil || info.transparent=="unknown"
+                            let why=info.transparentWhy ?? ""
+                            Text(unsure ? "Discogs doesn't say\(why.isEmpty ? "" : " (“\(why)”)"). Is your record see-through?" : "From Discogs: “\(why)”. Yes turns on the light correction for clear vinyl.")
+                                .font(.caption).foregroundStyle(unsure ? Color.orange : Color.secondary)
+                        }
+                    }
+                }
                 GridRow {
                     Text("Packaging").foregroundStyle(.secondary)
                     VStack(alignment:.leading,spacing:4) {

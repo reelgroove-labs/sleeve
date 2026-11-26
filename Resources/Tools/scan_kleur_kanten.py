@@ -58,9 +58,9 @@ def main():
         from PIL import Image
         Image.MAX_IMAGE_PIXELS = None
         with Image.open(path) as im:
-            dpi = im.info.get('dpi')
+            keep = {k: im.info[k] for k in ('dpi', 'icc_profile') if k in im.info}   # dpi en kleurprofiel blijven (archief)
         out = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA))
-        out.save(path, dpi=dpi) if dpi else out.save(path)
+        out.save(path, **keep)
         print(path.split('/')[-1], 'gain per channel (B,G,R):', np.round(gain, 3).tolist())
 
 

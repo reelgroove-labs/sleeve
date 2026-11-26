@@ -38,6 +38,11 @@ struct StudioColourControls:View {
             if model.colourScope=="vinyl" {
                 HStack {Text("Strength of color correction");Spacer();Text("\(Int(model.strength*100))%").monospacedDigit()}.font(.caption)
                 Slider(value:$model.strength,in:0...1)
+                HStack {Text("Brightness");Spacer();Text(model.colourLightness==0 ? "as photo" : String(format:"%+.0f",model.colourLightness)).monospacedDigit()}.font(.caption)
+                Slider(value:$model.colourLightness,in:-10...10,step:1).accessibilityLabel("Brightness of the new vinyl color")
+                HStack {Text("Vividness");Spacer();Text("\(Int((model.colourVividness*100).rounded()))%").monospacedDigit()}.font(.caption)
+                Slider(value:$model.colourVividness,in:0.8...1.3,step:0.02).accessibilityLabel("Vividness of the new vinyl color")
+                Text("Brighter or more vivid than the photo when the record looks livelier in your hand. The label and centre hole stay unchanged.").font(.caption).foregroundStyle(.secondary)
             }
             Text("3 · Make the new colors").font(.headline)
             Text("Use the big button below. You'll then see the saved new color copies and can compare them with the originals.").font(.caption).foregroundStyle(.secondary)

@@ -9,6 +9,7 @@ struct StudioScanRecipe:Codable {
     var useNames:Bool
     var useStand:Bool
     var useColour:Bool
+    var labelExpandMM:Int? = nil
 }
 struct StudioEditingSession {
     var workspace:WorkspaceSnapshot
@@ -37,7 +38,7 @@ extension StudioModel {
     func scanSettings(for item:MediaItem)->WorkspaceSnapshot {
         guard let run=originalScanRun(for:item) else {return captureWorkspace()}
         var value=run.workspace
-        if let recipe=run.scanRecipe {value.inputs=recipe.inputs;value.discogs=recipe.discogs;value.variant=recipe.variant;value.useNames=recipe.useNames;value.useStand=recipe.useStand;value.useColour=recipe.useColour}
+        if let recipe=run.scanRecipe {value.inputs=recipe.inputs;value.discogs=recipe.discogs;value.variant=recipe.variant;value.useNames=recipe.useNames;value.useStand=recipe.useStand;value.useColour=recipe.useColour;value.enlargeLabel=(recipe.labelExpandMM ?? 0)==1}
         return value
     }
     func prepareEditing(_ item:MediaItem,retry:Bool)->Bool {

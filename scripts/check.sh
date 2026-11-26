@@ -10,7 +10,10 @@ export PYTHONDONTWRITEBYTECODE=1
 "$RUNTIME_PY" Tests/check_placement.py
 "$RUNTIME_PY" Tests/check_arrange.py
 "$RUNTIME_PY" Tests/check_scan_order.py
-for check in bridge audits progress cancel circle_edit memory scratch scratch_work release_advice blend fields handoff preview_cache workers facts_fixes; do
+"$RUNTIME_PY" Tests/check_edge_line.py
+"$RUNTIME_PY" Tests/check_colour_panel.py
+"$RUNTIME_PY" Tests/check_icc.py
+for check in bridge audits progress cancel circle_edit memory scratch scratch_work release_advice blend fields handoff preview_cache workers facts_fixes source_checks label_material label_orientation paper_detail; do
  "$RUNTIME_PY" "Tests/check_${check}.py" "$CHECK_DIR/$check"
 done
 mkdir -p "$CHECK_DIR/Checks.app/Contents/MacOS"

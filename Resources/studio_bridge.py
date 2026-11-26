@@ -9,7 +9,7 @@ except ImportError:
  print(json.dumps({'event':'error','message':'The image components are missing. Quit Sleeve and first run Installeer beeldonderdelen.command from the download package.'}),flush=True)
  raise SystemExit(1)
 sys.path.insert(0,str(TOOLS))
-PARTS={'front','back','inside','insert','insert_left','insert_right','inlay','sidea','sideb','sidec','sided','cd','cd1','cd2','sticker'}
+PARTS={'front','back','inside','insert','insert_left','insert_right','inlay','sidea','sideb','sidec','sided','cd','cd1','cd2','sticker','labela','labelb','labelc','labeld'}
 EXTS={'.png','.jpg','.jpeg','.tif','.tiff','.bmp','.webp'}
 EVENT_STREAM=sys.stdout
 CHECKING_AFTER_PROCESS=False
@@ -29,10 +29,15 @@ SAME_PRINT_MM=2.5
 # Scheelt het minder dan dit, dan is het eerder hetzelfde vel dat anders gesneden is.
 SAME_SHEET_MM=6.0
 
+TAG_SRGB=False   # alleen bij nieuwe beelden (scan, colour); een hernoemde kopie blijft byte voor byte gelijk
 def emit(event,**kwargs):
  global PENDING_COMPLETION
  if event=='outputs':
-  for file in kwargs.get('files',[]):JOB_OUTPUTS[file['path']]=file
+  for file in kwargs.get('files',[]):
+   try:
+    if TAG_SRGB:import scan_icc;scan_icc.tag_srgb(file['path'])   # sRGB-profiel in elk nieuw gemaakt PNG (archief)
+   except Exception as error:JOB_WARNINGS.append(f"no color profile added to {os.path.basename(file.get('path',''))}: {error}")
+   JOB_OUTPUTS[file['path']]=file
  if event=='warning':JOB_WARNINGS.append(kwargs.get('message',''))
  if event=='complete' and CHECKING_AFTER_PROCESS:
   PENDING_COMPLETION=kwargs;return
@@ -224,8 +229,18 @@ def feiten_part(req,part,files,output,work,decision=None,fmt='',release_dpi=0.0,
  if target:cmd+=['--target',str(target)]
  if req.get('seamLevel'):cmd+=['--seam-level']
  if req.get('levelVinyl'):cmd+=['--level-vinyl']
+ if part=='front':
+  import scan_window_detail
+  detail=req.get('windowDetail') or scan_window_detail.remembered_detail(files)
+  if detail:cmd+=['--window-detail',str(detail)]
  work.mkdir(parents=True,exist_ok=True)
- process=subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
+ env=dict(os.environ)
+ if req.get('labelExpandMM') == 1 and fmt=='vinyl' and part.startswith('side'):
+  env['SLEEVE_LABEL_EXPAND_MM']='1'
+ else:
+  env.pop('SLEEVE_LABEL_EXPAND_MM',None)
+ if fmt=='vinyl':env.setdefault('SLEEVE_SEAM_DIAGNOSTICS_DIR',str((output/'Seam checks').resolve()))
+ process=subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True,env=env)
  OCR_CHILDREN.add(process)
  err_lines=[]
  def read_err():
@@ -254,7 +269,7 @@ def feiten_part(req,part,files,output,work,decision=None,fmt='',release_dpi=0.0,
 def feiten_file(result):
  return {'path':result.get('path',''),'source':(result.get('scans') or [''])[0],'partial':False,'part':result.get('part','unknown'),
          'verdict':result.get('verdict'),'why':result.get('why',[]),'choices':result.get('choices',[]),'scans':result.get('scans',[]),
-         'message':result.get('message'),'applied':result.get('applied')}
+         'message':result.get('message'),'applied':result.get('applied'),'seamDetails':result.get('seamDetails')}
 
 def warm_up_text_recognition(work):
  """Het nauwkeurige tekstmodel van macOS op de achtergrond laten voorbereiden (de eerste keer
@@ -277,13 +292,13 @@ def warm_up_text_recognition(work):
 
 def feiten_scan(req,rows,layout,work):
  """Feitenroute: elk vak is één onderdeel; uitsnijden en rechtop op feiten, goed of twijfel."""
- warm_up_text_recognition(work)
  import concurrent.futures as CF
  by_name={Path(r['path']).name:r['path'] for r in rows}
  jobs=[]
  for group in layout:
   if group.get('part') not in PARTS:raise ValueError('Give every slot its part (Front, Back, Side A …) before processing.')
   jobs.append((group['part'],[by_name[name] for name in group['files']]))
+ warm_up_text_recognition(work)
  # Feit (Discogs): welke plaatkanten de release heeft (tracklist A1, B1 …). Ontbreekt er
  # een kant in je vakken, dan melden; niets raden.
  missing=[]
@@ -318,10 +333,87 @@ def feiten_scan(req,rows,layout,work):
   for future in CF.as_completed(futures):
    result=future.result();done+=1;results.append(result)
    emit('status',message=f'{futures[future]}: {result.get("verdict")} ({done} of {len(jobs)})')
+   if result.get('applied'):emit('log',message=f'{futures[future]}: {result["applied"]}')   # Sleeve Transparant: wat er toegepast is (o.a. lichtcorrectie) in het logboek
    emit('progress',fraction=done/len(jobs),index=None,total=len(jobs),phase='Processing parts',scope='preparation',completedParts=done,activeParts=min(2,len(jobs)-done))
    if result.get('panels'):emit('outputs',files=[dict(feiten_file(result),path=q['path'],part=q['part']) for q in result['panels']])
    elif result.get('path'):emit('outputs',files=[feiten_file(result)])
    for why in result.get('why',[]):emit('warning',message=f'{futures[future]}: {why}')
+ # Sleeve Transparant: een onderdeel dat tijdens het parallel verwerken te weinig geheugen had (Deena & Jim wit, binnenkant:
+ # 'needs more memory than was available beforehand'), nu alleen nog eens verwerken
+ for i_,r_ in enumerate(list(results)):
+  if any('needs more memory than was available beforehand' in str(w) for w in (r_.get('why') or [])):
+   part_=r_.get('part');files_=next((f for p,f in jobs if p==part_),None)
+   if not files_:continue
+   emit('status',message=f'{part_}: processing again on its own (not enough memory while processing two parts at once)')
+   again=feiten_part(req,part_,files_,output,work/f'again-{uuid.uuid4().hex[:8]}',None,fmt,release_dpi)
+   results[results.index(r_)]=again
+   if again.get('path'):emit('outputs',files=[feiten_file(again)])
+   for why in again.get('why',[]):emit('warning',message=f'{part_}: {why}')
+ # Sleeve Transparant: de kanten zijn op scanvolgorde ingedeeld, maar na het verwerken leest elk label een andere kant
+ # en samen precies de vakken (Hotel New York 2022: vak A leest 'B', vak B leest 'A'; kant B was eerst gescand).
+ # Feit: de kant op het label. Dan de kanten omwisselen (bestanden, onderdelen, de scans voor het losse label).
+ if fmt=='vinyl':
+  side_res={r.get('part'):r for r in results if re.fullmatch(r'side[abcd]',r.get('part') or '')}
+  said={p:r.get('side_on_label') for p,r in side_res.items()}
+  if len(side_res)>=2 and all(said.values()) and sorted('side'+v for v in said.values())==sorted(side_res) and any('side'+v!=p for p,v in said.items()):
+   ren={p:'side'+v for p,v in said.items()}
+   moves=[]
+   for p,r in side_res.items():
+    if ren[p]==p or not r.get('path'):continue
+    old=Path(r['path']);new=old.with_name(old.name.replace('_'+p,'_'+ren[p]))
+    tmp=old.with_name('.wissel-'+old.name);old.rename(tmp);moves.append((tmp,new,r))
+   for tmp,new,r in moves:
+    tmp.rename(new);r['path']=str(new)
+   for p,r in side_res.items():
+    r['part']=ren[p]
+    r['why']=[w for w in (r.get('why') or []) if not w.startswith('the label says side')]
+    if not r['why'] and r.get('verdict')=='TWIJFEL':r['verdict']='GOED'
+   jobs=[(ren.get(part,part),files_) for part,files_ in jobs]
+   emit('log',message='sides swapped to what the labels read: '+', '.join(f'{p[-1].upper()} -> {ren[p][-1].upper()}' for p in sorted(ren) if ren[p]!=p))
+   emit('outputs',files=[feiten_file(r) for r in side_res.values() if r.get('path')])
+ # A scan explicitly marked as a label is also exported separately. Keep it
+ # in the original side job so the sharp label pixels can still be used there.
+ if fmt == 'vinyl':
+  existing={r['part'] for r in results}
+  for part,files_ in jobs:
+   if part not in ('sidea','sideb','sidec','sided'):continue
+   label='label'+part[-1]
+   explicit=[f for f in files_ if re.search(r'(?i)(?:^|[_ .-])label(?:[_ .-]|$)',Path(f).stem)]
+   if not explicit:
+    import scan_label
+    explicit=[f for f in files_ if scan_label.complete_label_scan(f)]
+   if len(explicit)>1 and label not in existing:
+    # Sleeve Transparant: ook een nieuwe kantscan kan het hele label tonen (niet-gedraaid scannen, TA clear A: 0009 en de
+    # losse labelscan 0013). Dan de scan met het scherpste label, gemeten zoals het label in de kant (sharpest_label).
+    try:
+     import scan_feitenroute as FR
+     pick=FR.sharpest_label(explicit,release_dpi)
+     if pick:explicit=[pick[0]];emit('log',message=f'{label}: {len(pick[4])} scans show the whole label; the sharpest is used ({Path(pick[0]).name})')
+    except Exception as e:emit('log',message=f'{label}: choosing the sharpest label failed: {e}')
+   if label in existing or len(explicit)!=1:continue
+   emit('status',message=f'Exporting the separate label for side {part[-1].upper()}')
+   result=feiten_part(req,label,explicit,output,work/f'{label}-{uuid.uuid4().hex[:8]}',None,fmt,release_dpi)
+   results.append(result)
+   existing.add(label)
+   if result.get('path'):emit('outputs',files=[feiten_file(result)])
+   for note in result.get('why',[]):emit('warning',message=f'{label}: {note}')
+  # Sleeve Transparant: geen scan toont het hele label (STTOF 2025: de labelscans zijn 102 mm, het label 100 mm), maar de
+  # kant is gemaakt en het label staat erop: het losse label uit het samengevoegde beeld van die kant (zelfde labelroute:
+  # rand en gat gemeten, rechtop op de tekst). Lukt dat niet, dan geen los label (zoals eerst).
+  for part,files_ in jobs:
+   if part not in ('sidea','sideb','sidec','sided'):continue
+   label='label'+part[-1]
+   side_r=next((r for r in results if r.get('part')==part and r.get('path')),None)
+   if any(r.get('part')==label and r.get('path') for r in results) or not side_r:continue
+   emit('status',message=f'Exporting the separate label for side {part[-1].upper()} from the merged side (no scan shows the whole label)')
+   result=feiten_part(req,label,[side_r['path']],output,work/f'{label}-{uuid.uuid4().hex[:8]}',None,fmt,release_dpi)
+   if not result.get('path'):
+    emit('log',message=f'{label}: no separate label from the merged side ({"; ".join(result.get("why") or [])})');continue
+   result['applied']=(result.get('applied','')+' cut from the merged side (no scan shows the whole label)').strip()
+   results=[r for r in results if r.get('part')!=label]          # een mislukt los label (zonder bestand) vervangen
+   results.append(result);existing.add(label)
+   emit('outputs',files=[feiten_file(result)])
+   for note in result.get('why',[]):emit('warning',message=f'{label}: {note}')
  # Feit: voor- en achterkant zijn dezelfde hoes, dus even groot; de inserts van één release
  # zijn hetzelfde drukwerk, dus even groot. Wijkt er één af, dan twijfel (met de maten).
  def dims(r):return sorted(r.get('size_mm') or [0,0])
@@ -431,6 +523,16 @@ def scan(req,rows,work):
   (output/'Studio-verwerking.json').write_text(json.dumps({'action':'scan','route':'feiten','format':release_format(req,[part]),'release_dpi':0.0,'inputs':rows,'outputs':files,'results':[result],'discogs':req.get('discogs','')},ensure_ascii=False,indent=2))
   emit('complete',message=f'{part}: {result.get("verdict")}',path=str(output));return
  layout=layout_from_groups(rows)
+ # Sleeve Transparant: twee vakken 'front' waarvan één een losse scan met een volledig rechthoekig venster is: dat is de
+ # detailscan van het venster (US white EYES), geen tweede voorkant. Die gaat als windowDetail naar de voorkant.
+ fronts=[g for g in layout if g['part']=='front']
+ if len(fronts)==2 and not req.get('windowDetail'):
+  import scan_window_detail as WD
+  by_name_={Path(r['path']).name:r['path'] for r in rows}
+  single=[g for g in fronts if len(g['files'])==1 and WD.has_window(by_name_[g['files'][0]])]
+  if len(single)==1:
+   req['windowDetail']=by_name_[single[0]['files'][0]];layout=[g for g in layout if g is not single[0]]
+   emit('log',message=f"front: {single[0]['files'][0]} is a detail scan of the window; used for the window")
  # Feit: elk onderdeel bestaat één keer (twee vakken 'Side A' of twee keer 'CD' kan niet; inserts wel)
  seen={}
  for g in layout:
@@ -483,6 +585,9 @@ def colour(req,rows,work):
  if not ref.is_file():raise ValueError('First choose your own photo or a Discogs reference photo.')
  strength=float(req.get('strength',1))
  if not 0<=strength<=1:raise ValueError('The color strength must be between 0 and 100%.')
+ lightness=float(req.get('lightness',0));vividness=float(req.get('vividness',1))
+ if not -10<=lightness<=10:raise ValueError('Brightness must be between -10 and +10.')
+ if not .8<=vividness<=1.3:raise ValueError('Vividness must be between 80 and 130%.')
  scope=req.get('scope','vinyl')
  if scope not in ('vinyl','photo'):raise ValueError('Choose vinyl records or a cover.')
  rows=[row for row in rows if not row.get('reference')]
@@ -499,19 +604,19 @@ def colour(req,rows,work):
     probe=im.getchannel('A');probe.thumbnail((1400,1400))
     if CU.already_cut(probe) is None:raise ValueError('A selected image isn’t a cut-out record yet. Process the scans first.')
  output=colour_destination(rows[0]['path']);emit('destination',path=str(output))
- files=[colour_copy(row,ref,strength,scope,i,len(rows)) for i,row in enumerate(rows)]
+ files=[colour_copy(row,ref,strength,scope,i,len(rows),lightness,vividness) for i,row in enumerate(rows)]
  if not files:raise ValueError('No color suggestions were made. Choose a source image too.')
- colour_metadata(ref,strength,scope,rows,files)
+ colour_metadata(ref,strength,scope,rows,files,lightness=lightness,vividness=vividness)
  emit('complete',message=f"{len(files)} new color cop{'ies' if len(files)!=1 else 'y'} saved. See New Colors; the originals are kept.",path=str(output))
 
-def colour_copy(row,ref,strength,scope,i,total):
+def colour_copy(row,ref,strength,scope,i,total,lightness=0.,vividness=1.):
  import scan_colour as C
  src=Path(row['path']);output=colour_destination(src);stem=re.sub(r'(?:_kleur(?:_\d+)?)+$','',src.stem)+'_kleur';dst=output/(stem+'.png');suffix=2
  while dst.exists():dst=output/(stem+'_'+str(suffix)+'.png');suffix+=1
  emit('status',message=f'New color for {i+1} of {total}: {src.name}')
  temporary=output/('.voorstel-'+uuid.uuid4().hex+'.png')
  if scope=='vinyl':
-  with contextlib.redirect_stdout(io.StringIO()) as captured:C.recolor(str(src),str(ref),str(temporary),strength,progress=lambda fraction,phase:emit('progress',fraction=fraction,index=i+1,total=total,phase=phase))
+  with contextlib.redirect_stdout(io.StringIO()) as captured:C.recolor(str(src),str(ref),str(temporary),strength,lightness=lightness,vividness=vividness,progress=lambda fraction,phase:emit('progress',fraction=fraction,index=i+1,total=total,phase=phase))
   emit('log',message=captured.getvalue())
  else:
   run([TOOLS/'scan_discogs.py',src,ref,'--alleen-kleur','--uit',temporary])
@@ -683,6 +788,7 @@ def main():
  req=json.loads(Path(sys.argv[1]).read_text());work=Path(sys.argv[1]).parent
  import cv2,PIL,numpy
  action=req.get('action')
+ global TAG_SRGB;TAG_SRGB=action in ('scan','colour')
  if action=='releaseAdvice':
   import scan_release_advice as A
   def recognize_command(command):

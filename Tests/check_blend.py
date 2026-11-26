@@ -56,3 +56,101 @@ for kind in ['paper','orange','clear','black']:
  reports.append(report);print(report,flush=True)
  assert report['alpha_identical'] and maximum<=1 and fraction<.005,report
 (root/'RESULTAAT.json').write_text(json.dumps(reports,indent=2))
+
+# A line that disappears at a source switch deserves a warning.
+paper = np.full((256, 384), 242, np.float32)
+with_line = paper.copy()
+with_line[125:129, 55:315] = 205
+masks = {0: np.ones(paper.shape, bool), 1: np.ones(paper.shape, bool)}
+selection = np.zeros(paper.shape, np.uint8)
+selection[:, 180:] = 1
+interior = np.ones_like(paper)
+assert S.seam_line_conflicts([with_line, paper], masks, [0, 1], selection, interior, 12)
+assert not S.seam_line_conflicts([with_line, with_line], masks, [0, 1], selection, interior, 12)
+assert not S.seam_line_conflicts([with_line, paper], masks, [0, 1], selection, interior * .5, 12)
+
+# Source evidence only clears when the rendered line crosses the flagged area.
+locations = {}
+S.seam_line_conflicts([with_line, paper], masks, [0, 1], selection, interior, 12, locations)
+points = locations[(0, 1)]
+identity = np.eye(3)[:2]
+finished = cv2.cvtColor(with_line.astype(np.uint8), cv2.COLOR_GRAY2BGRA)
+broken = finished.copy()
+broken[:, 178:185, :3] = 242
+assert S.unresolved_seam_points(finished, points, identity, 12) == 0
+assert S.unresolved_seam_points(broken, points, identity, 12) == len(points)
+transparent = finished.copy()
+transparent[126, 180, 3] = 0
+assert S.unresolved_seam_points(transparent, points, identity, 12) == len(points)
+native = cv2.resize(finished, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST)
+assert S.unresolved_seam_points(native, points, identity * 2, 12) == 0
+
+light_line = np.full_like(finished, 175)
+light_line[:, :, 3] = 255
+light_line[125:129, 55:315, :3] = 222
+assert S.unresolved_seam_points(light_line, points, identity, 12) == 0
+light_line[:, 178:185, :3] = 175
+assert S.unresolved_seam_points(light_line, points, identity, 12) == len(points)
+flat_output = cv2.cvtColor(paper.astype(np.uint8), cv2.COLOR_GRAY2BGRA)
+assert S.unresolved_seam_points(flat_output, points, identity, 12) == len(points)
+three_masks = dict(masks)
+three_masks[2] = masks[0]
+locations = {}
+S.seam_line_conflicts([with_line, paper, paper], three_masks, [0, 1, 2], selection, interior, 12, locations)
+assert S.unresolved_seam_points(flat_output, locations[(0, 1)], identity, 12) == 0
+S.seam_line_conflicts([with_line, paper, with_line], three_masks, [0, 1, 2], selection, interior, 12, locations)
+assert S.unresolved_seam_points(flat_output, locations[(0, 1)], identity, 12) == len(points)
+
+wide = np.full((160, 200), 165, np.uint8)
+wide[77:84, 20:180] = 220
+coverage = np.ones(wide.shape, bool)
+line_proof = S.broad_line_agreement([wide, wide], [coverage, coverage], 0, 1,
+                                   100, 80, 23, True, 9, 29, 4)
+assert line_proof[1] >= 0
+wide_point = np.array([[100, 80, True, False, *line_proof]])
+wide_png = cv2.cvtColor(wide, cv2.COLOR_GRAY2BGRA)
+assert S.unresolved_seam_points(wide_png, wide_point, identity, 12) == 0
+wide_png[:, 97:104, :3] = 165
+assert S.unresolved_seam_points(wide_png, wide_point, identity, 12) == 1
+assert S.broad_line_agreement([wide, wide], [coverage, ~coverage], 0, 1,
+                             100, 80, 23, True, 9, 29, 4) == (-1, -1)
+
+# A source may clean the rim only where another scan confirms the same edge.
+from scan_rim import DEPTHS, choose_segments
+
+radial_count = 128
+coverage = np.ones((radial_count, len(DEPTHS)), dtype=bool)
+
+
+def sample_rim(colour, backdrop, edge):
+    profile = np.where(DEPTHS[:, None] < edge, np.float32(colour), np.float32(backdrop))
+    return np.broadcast_to(profile, (radial_count, len(DEPTHS), 3)).copy()
+
+
+for colour, backdrop, shade in (([240, 242, 241], [180, 191, 218], -21),
+                                 ([104, 121, 148], [229, 230, 231], 26)):
+    clean = sample_rim(colour, backdrop, .9)
+    uneven = clean.copy()
+    uneven[:, (DEPTHS >= -.7) & (DEPTHS < .6)] += shade
+    shifted = sample_rim(colour, backdrop, 1.65)
+    assert (choose_segments(uneven, [(uneven, coverage), (clean, coverage)])[0] == 1).all()
+    assert (choose_segments(uneven, [(uneven, coverage), (shifted, coverage)])[0] == -1).all()
+    assert (choose_segments(clean, [(clean, coverage), (clean, coverage)])[0] == -1).all()
+
+clean = sample_rim([240, 242, 241], [180, 191, 218], .9)
+uneven = clean.copy()
+uneven[:, (DEPTHS >= -.7) & (DEPTHS < .6)] -= 21
+clean[23:26, 38:41] -= 42
+assert choose_segments(uneven, [(uneven, coverage), (clean, coverage)])[0][24] == -1
+
+# Curved or broken printed shapes are faithful when their actual source
+# structure is reproduced, even when a straight-line probe is inconclusive.
+reference_patch=np.full((65,65),220,np.float32)
+cv2.circle(reference_patch,(32,32),17,40,4)
+cv2.line(reference_patch,(14,46),(50,46),40,3)
+assert S.faithful_source_patch(reference_patch+5,reference_patch,4)
+assert not S.faithful_source_patch(np.full_like(reference_patch,220),reference_patch,4)
+missing_patch=reference_patch.copy()
+missing_patch[10:30,10:54]=220
+assert not S.faithful_source_patch(missing_patch,reference_patch,4)
+assert not S.faithful_source_patch(cv2.GaussianBlur(reference_patch,(0,0),5),reference_patch,4)

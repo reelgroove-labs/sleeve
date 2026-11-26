@@ -248,6 +248,8 @@ struct StudioView: View {
                 Text("Use of Discogs").font(.system(size:12,weight:.semibold))
                 Toggle("Use file names",isOn:$model.useNames)
                 Toggle("Rotate cover and record correctly",isOn:$model.useStand)
+                Toggle(isOn:$model.enlargeLabel){VStack(alignment:.leading,spacing:2){Text("Enlarge paper label by 1 mm (retouch)");Text("Enlarges the label and its printing by 1 mm all around to cover the old edge. Adds 2 mm to its diameter; keeps the centre hole. Off preserves the measured size.").font(.caption).foregroundStyle(.secondary)}}
+                Toggle(isOn:$model.lightCorrection){VStack(alignment:.leading,spacing:2){Text("Light correction (transparent vinyl)");Text("Removes the scanner’s fine vertical stripes from record sides and keeps each scan’s own exposure (no darker patches on clear vinyl). Covers are not changed.").font(.caption).foregroundStyle(.secondary)}}
                 Text("Check your results first. You can then fine-tune cover and record colors under ‘Adjust Color’.").font(.caption).foregroundStyle(.secondary)
             }
             if model.mode == .scans && !model.inputs.isEmpty {
