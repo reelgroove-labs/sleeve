@@ -76,6 +76,12 @@ ANALYSIS_DPI = 300.0              # rekenen op deze resolutie; het eindbeeld kom
 SCAN_EDGE_MM = 0.6               # feit: de schaduw van de scannerrand is minstens ±0,5 mm breed; daarbinnen is een rand geen bewijs
 SCAN_EDGE_MAX_MM = 2.5           # ... en op een gekleurd vel gemeten tot ±2 mm (helderheid 138 -> 191); per scanrand gemeten, zie shading_widths
 RIM_CUT_MM = 0.25                # net binnen de binnenkant van de afgeronde rand snijden
+VINYL_RIM_MM = 0.75              # plaat (0.5.54): snede zoveel binnen de gemeten buitencirkel. Feit: kant A en B van één plaat zijn even
+                                 # groot; de buitencirkel is op beide kanten gelijk gemeten (US groen 300,60/300,44), de binnenkant van de
+                                 # afgeronde rand niet: die ligt per richting op 1,2 (schaduwkant) tot 2,2 mm (lichtkant), en de oude zoeker
+                                 # vond per richting de buitenrand of een stap in de rand (US groen 295,1/293,4, HNY rood 295,1/293,8).
+                                 # Met de 2 mm rand eraf (VINYL_INSET_MM) eindigt het beeld 2,75 mm binnen de buitenrand: voorbij de
+                                 # afgeronde rand, en op de maat die kant A in het archief al had.
 FLAT_START = os.environ.get('SLEEVE_FLAT_START', '1') != '0'   # snijden waar de kleur van het vlakke vinyl begint (0.5.32)
 FLAT_DE = 3.0                    # ... binnen zoveel ΔE van het vlakke vinyl telt als vlak
 EDGE_FLOOR = 3.0                 # kleinste sprong (Sobel) die een rand kan zijn; wit op wit is zwak, dus laag
@@ -1245,9 +1251,9 @@ def main():
                 # cd: de doorzichtige rand van buiten naar binnen; drukwerk (ringtekst) ligt daarbinnen
                 # de doorzichtige rand is een donkere band van ±1-1,5 mm; vanaf het drukwerk naar buiten de eerste sprong
                 _, _, ri, _ = precise_circle(bgr, alpha, X, Y, rr - 1.0 * px_mm, 0.9 * px_mm, ROUND_MM * px_mm, inner=True, fixed_centre=True, outermost=False, median=True)
-            else:
-                _, _, ri, _ = precise_circle(bgr, alpha, X, Y, rr - 0.8 * px_mm, 1.2 * px_mm, ROUND_MM * px_mm, inner=True, fixed_centre=True)
-            if rr - (2.2 if fmt.startswith('cd') else 2) * DISC_EDGE_MM * px_mm < ri < rr:
+            if not fmt.startswith('cd'):
+                rr -= VINYL_RIM_MM * px_mm                 # plaat: vaste afstand tot de gemeten buitencirkel (zie VINYL_RIM_MM)
+            elif rr - 2.2 * DISC_EDGE_MM * px_mm < ri < rr:
                 rr = ri - RIM_CUT_MM * px_mm
             else:
                 rr -= DISC_EDGE_MM * px_mm
