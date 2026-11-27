@@ -313,6 +313,15 @@ def main():
                 # Stickerkleur: mediaan over u -20..-2 (na de grove stap ligt de kaderlijn verder naar binnen; een waas
                 # langs de rand valt er hooguit voor een klein deel in en telt in de mediaan niet mee).
                 st_ = np.median(P[0:19], 0); bg_ = np.median(P[max(30, min(50, last_ - 9)):min(60, last_ + 1)], 0); gap_ = float(np.linalg.norm(bg_ - st_))
+                # Sleeve 0.5.56 - feit: de grove snede kan tot ±12 px buiten de rand liggen (Who's Your Momma 2016 zilver, de
+                # sticker op de krimpfolie: onder 10 px wit). Dan is u -20..-2 half sticker, half achtergrond, de gemeten
+                # stickerkleur een mengsel en werd de rand niet gevonden (wit randje bleef staan). De stickerkleur dan dieper
+                # naar binnen meten (u -60..-40, binnen het kader is het dezelfde sticker).
+                Q_ = prof_out(nm, -60, -40)
+                if not np.isnan(Q_).any():
+                    st_deep = np.median(Q_, 0)
+                    if float(np.linalg.norm(st_ - st_deep)) > 12 and float(np.linalg.norm(bg_ - st_deep)) > gap_:
+                        st_ = st_deep; gap_ = float(np.linalg.norm(bg_ - st_))
                 if gap_ < 16:
                     continue                                       # achtergrond lijkt op de sticker: niets te meten
                 # De rand ligt waar de kleur een kwart van de weg naar de achtergrond van de sticker af is, niet halverwege:
