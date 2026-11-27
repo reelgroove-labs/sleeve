@@ -1,6 +1,6 @@
 {
   "test_build_date": "2026-11-27",
-  "type": "release 0.5.54",
+  "type": "release 0.5.55",
   "source_sha256": {
     "studio_bridge.py": "6caacae677b4c99e101b740e744266b9ba95a2811ec6c33f3effbaa2a87efe63",
     "Tools/scan_blend.py": "bef2426ba93ef2034753a4b8d4422855398edc182c600c779ec09fc2ee6a5832",

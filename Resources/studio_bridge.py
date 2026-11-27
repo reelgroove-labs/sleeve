@@ -217,7 +217,19 @@ def run_facts(output):
  except (OSError,ValueError,TypeError):pass
  return None
 
-def feiten_part(req,part,files,output,work,decision=None,fmt='',release_dpi=0.0,target=None,occurrence=1):
+def label_grown(side_result):
+ """Mm waarmee het label op deze kant rondom vergroot is (retouche van de kant), 0 als niet. Een los label uit die kant
+ krijgt zijn eigen maat terug (scan_feitenroute --label-enlarged-mm)."""
+ return 1.0 if 'paper label and printing enlarged 1 mm' in ((side_result or {}).get('applied') or '') else 0.0
+
+def side_result_for(output,path):
+ """De uitkomst van het onderdeel dat dit bestand maakte (Studio-verwerking.json in die map), of None."""
+ try:
+  data=json.loads((Path(output)/'Studio-verwerking.json').read_text())
+  return next((r for r in data.get('results',[]) if r.get('path') and Path(r['path'])==Path(path)),None)
+ except (OSError,ValueError,TypeError):return None
+
+def feiten_part(req,part,files,output,work,decision=None,fmt='',release_dpi=0.0,target=None,occurrence=1,label_enlarged_mm=0.0):
  """Eén onderdeel door de feitenroute (scan_feitenroute.py); geeft de uitkomst."""
  cmd=[sys.executable,str(TOOLS/'scan_feitenroute.py'),'--part',part,'--out',str(output),'--work',str(work),*files]
  if req.get('discogs'):cmd+=['--discogs',release_url(req['discogs'])]
@@ -228,6 +240,7 @@ def feiten_part(req,part,files,output,work,decision=None,fmt='',release_dpi=0.0,
  if release_dpi:cmd+=['--release-dpi',str(release_dpi)]
  if target:cmd+=['--target',str(target)]
  if occurrence>1 and not target:cmd+=['--occurrence',str(occurrence)]
+ if label_enlarged_mm:cmd+=['--label-enlarged-mm',str(label_enlarged_mm)]
  if req.get('seamLevel'):cmd+=['--seam-level']
  if req.get('levelVinyl'):cmd+=['--level-vinyl']
  if part=='front':
@@ -419,7 +432,8 @@ def feiten_scan(req,rows,layout,work):
    side_r=next((r for r in results if r.get('part')==part and r.get('path')),None)
    if any(r.get('part')==label and r.get('path') for r in results) or not side_r:continue
    emit('status',message=f'Exporting the separate label for side {part[-1].upper()} from the merged side (no scan shows the whole label)')
-   result=feiten_part(req,label,[side_r['path']],output,work/f'{label}-{uuid.uuid4().hex[:8]}',None,fmt,release_dpi)
+   grown=label_grown(side_r)
+   result=feiten_part(req,label,[side_r['path']],output,work/f'{label}-{uuid.uuid4().hex[:8]}',None,fmt,release_dpi,label_enlarged_mm=grown)
    if not result.get('path'):
     emit('log',message=f'{label}: no separate label from the merged side ({"; ".join(result.get("why") or [])})');continue
    result['applied']=(result.get('applied','')+' cut from the merged side (no scan shows the whole label)').strip()
@@ -502,7 +516,8 @@ def feiten_decide(req,work):
  # Feit: een beslissing verandert alleen wat jij kiest. Het onderdeel wordt opnieuw gemaakt met
  # hetzelfde formaat, dezelfde verpakking en dezelfde resolutie als de eerste keer.
  fmt,release_dpi=run_facts(output) or (release_format(req,[part]),0.0)
- result=feiten_part(req,part,files,output,work/f'decide-{uuid.uuid4().hex[:8]}',decision,fmt,release_dpi,target=old if old and old.suffix.lower()=='.png' else None)
+ grown=label_grown(side_result_for(output,files[0])) if part.startswith('label') and len(files)==1 else 0.0   # label uit de kant
+ result=feiten_part(req,part,files,output,work/f'decide-{uuid.uuid4().hex[:8]}',decision,fmt,release_dpi,target=old if old and old.suffix.lower()=='.png' else None,label_enlarged_mm=grown)
  if old and result.get('path') and Path(result['path'])!=old and old.exists():
   shutil.move(result['path'],old);result['path']=str(old)
  # Feit: kant A en B (C en D) zijn dezelfde plaat. Een opnieuw gemaakte kant krijgt weer de kleur van
