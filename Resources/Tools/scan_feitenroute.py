@@ -1176,6 +1176,16 @@ def label_route(a, decision):
     if image is None:
         print(json.dumps(result))
         return
+    grow = getattr(a, 'label_enlarged_mm', 0.0) or 0.0
+    if grow > 0 and facts.get('diameter_mm'):
+        # Feit: een label is zijn eigen maat (99-100 mm); de vergroting van 1 mm rondom is een retouche van de kant
+        # (paste_label: het papier geschaald om het midden van het label). Een los label uit die kant (geen scan toont
+        # het hele label: For Bitter Or Worse 2021 goud, 101,0 mm) krijgt die schaal terug, zodat het even groot is
+        # als een label uit een losse labelscan.
+        d = float(facts['diameter_mm']); k = (d - 2 * grow) / d
+        image = cv2.resize(image, (max(1, round(image.shape[1] * k)), max(1, round(image.shape[0] * k))), interpolation=cv2.INTER_AREA)
+        result['diameter_mm'] = round(d - 2 * grow, 2)
+        result['applied'] = (result.get('applied', '') + f' label enlargement of the side undone ({d:.2f} -> {d - 2 * grow:.2f} mm): the label at its own size').strip()
     os.makedirs(a.work, exist_ok=True)
     os.makedirs(a.out, exist_ok=True)
     raw = os.path.join(a.work, 'label.png')
@@ -1238,6 +1248,7 @@ def main():
     p.add_argument('--seam-level', action='store_true')       # optie: toon langs de naden gelijktrekken (randen uit de gewone run)
     p.add_argument('--level-vinyl', action='store_true')     # optie: helderheid van effen licht vinyl gelijktrekken (scan_vlak)
     p.add_argument('--occurrence', type=int, default=1)    # Sleeve 0.5.53: het hoeveelste deel met deze naam in scanvolgorde (insert, insert_2, ...)
+    p.add_argument('--label-enlarged-mm', type=float, default=0.0)   # los label uit een kant waarop het label al zoveel mm rondom vergroot is
     p.add_argument('--target', default='')                 # beslissing: precies dit bestand vervangen (niet een ander onderdeel met dezelfde naam)
     a = p.parse_args()
     folder = os.path.dirname(os.path.abspath(a.scans[0]))
