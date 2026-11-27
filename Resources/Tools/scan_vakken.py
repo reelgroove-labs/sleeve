@@ -94,19 +94,42 @@ def barcodes(path):
     return []
 
 
+SIDE_TRACKS = {}       # Sleeve 0.5.56: kant -> tracktitels volgens Discogs (A1, A2 ... -> 'sidea'), gezet in main()
+
+
+def norm_title(t):
+    return re.sub(r'[^A-Z0-9]', '', t.upper())
+
+
+def tracks_side(lines):
+    """Feit: de nummers op een label zijn de nummers van die kant volgens Discogs (A1-A5 kant A, B1-B6 kant B).
+    Een kant telt als minstens twee titels van die kant op het label staan en geen enkele van een andere kant.
+    Geeft 'sidea'... of None."""
+    if not SIDE_TRACKS:
+        return None
+    text = [norm_title(l) for l in lines]
+    hits = {sd: sum(1 for t in titles if len(t) >= 4 and any(t in x for x in text)) for sd, titles in SIDE_TRACKS.items()}
+    found = [sd for sd, n in hits.items() if n]
+    return found[0] if len(found) == 1 and hits[found[0]] >= 2 else None
+
+
 def printed_record_side(path, work):
     """Read side lettering on the dark label at multiple physical rotations."""
     import scan_rechtop as upright
     from pathlib import Path
-    target = str(Path(work) / 'source.jpg')
+    # Sleeve 0.5.56: de scan één keer helemaal lezen (van de NAS ±107 MB) en daaruit zowel de kopie van 2200 px (het label
+    # zoeken) als het label op volle resolutie (de tekst lezen) halen. Feit: op 2200 px (het label ±730 px) is kleine labeltekst
+    # niet te lezen (Who's Your Momma 2016 zilver: "SIDP. ONF"), uit de scan zelf wel ("SIDE TW", tracklist leesbaar).
     try:
-        subprocess.run(['/usr/bin/sips', '-Z', '2200', '-s', 'format', 'jpeg',
-                        path, '--out', target], capture_output=True, timeout=25, check=True)
-    except (OSError, subprocess.SubprocessError):
+        from PIL import Image
+        Image.MAX_IMAGE_PIXELS = None
+        with Image.open(path) as original:
+            full = cv2.cvtColor(np.asarray(original.convert('RGB')), cv2.COLOR_RGB2BGR)
+    except Exception:
         return None
-    image = cv2.imread(target)
-    if image is None:
-        return None
+    k = 2200 / max(full.shape[:2])
+    image = cv2.resize(full, None, fx=k, fy=k, interpolation=cv2.INTER_AREA) if k < 1 else full
+    k = min(k, 1.0)
     # Full record scans show only part of the outer rim. The dark printed
     # label still provides the readable side designation.
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -127,9 +150,7 @@ def printed_record_side(path, work):
             import scan_label
             from PIL import Image
             dpi = scan_dpi.read(path)
-            with Image.open(path) as original:
-                full_width = original.width
-            found = scan_label.label_boundary(image, dpi / 25.4 * image.shape[1] / full_width) if dpi else None
+            found = scan_label.label_boundary(image, dpi / 25.4 * image.shape[1] / full.shape[1]) if dpi else None
         except Exception:
             found = None
         if found is None:
@@ -139,24 +160,34 @@ def printed_record_side(path, work):
         candidates.append((width * height, max(0, x), max(0, y), width, height))
     _, x, y, width, height = max(candidates)
     pad = max(8, round(.12*max(width,height)))
-    crop = image[max(0,y-pad):min(len(image),y+height+pad),
-                 max(0,x-pad):min(image.shape[1],x+width+pad)]
-    crop = cv2.resize(crop, None, fx=1000/max(crop.shape[:2]), fy=1000/max(crop.shape[:2]),
-                      interpolation=cv2.INTER_CUBIC)
+    box = (max(0,x-pad), max(0,y-pad), min(image.shape[1],x+width+pad), min(len(image),y+height+pad))
+    crop = full[round(box[1] / k):round(box[3] / k), round(box[0] / k):round(box[2] / k)]   # het label op volle resolutie
+    side_px = 1600                                                 # op 1600 px is de tracklist leesbaar
+    crop = cv2.resize(crop, None, fx=side_px/max(crop.shape[:2]), fy=side_px/max(crop.shape[:2]),
+                      interpolation=cv2.INTER_AREA if max(crop.shape[:2]) > side_px else cv2.INTER_CUBIC)
     values = {'ONE':'a','TWO':'b','THREE':'c','FOUR':'d','1':'a','2':'b','3':'c','4':'d'}
-    choices = set()
+    choices = set(); all_lines = []
     for angle in range(0,90,15):
         h,w = crop.shape[:2]
         matrix = cv2.getRotationMatrix2D((w/2,h/2),-angle,1)
         view = cv2.warpAffine(crop,matrix,(w,h),borderValue=(255,255,255))
         readings = upright.read_image(view)
         for lines in readings.values():
+            all_lines += lines
             for line in lines:
-                match = re.fullmatch(r'\s*SIDE[ :.-]*(ONE|TWO|THREE|FOUR|[ABCD1-4])\s*',
+                match = re.fullmatch(r'\s*SIDE[ :.-]*(ONE|TWO|THREE|FOUR|[ABCD1-4]|ON|TW|THR|FOU)\s*',
                                      line.strip(' -._:').upper())
                 if match:
-                    choices.add('side'+values.get(match[1],match[1].lower()))
-    return choices.pop() if len(choices)==1 else None
+                    # feit: een streep onder de kanttekst valt over de laatste letter ("SIDE TWO" onderstreept: "SIDE TW");
+                    # het begin van het woord is dan nog eenduidig
+                    word = {'ON':'ONE','TW':'TWO','THR':'THREE','FOU':'FOUR'}.get(match[1], match[1])
+                    choices.add('side'+values.get(word,word.lower()))
+    if len(choices) == 1:
+        return choices.pop()
+    # Sleeve 0.5.56 - feit: de kanttekst is niet altijd te lezen (Who's Your Momma 2016 zilver: "SIDE TWO" onderstreept,
+    # gelezen als "SIDE TW" of helemaal niet), de tracklist op het label wel: die nummers zijn de nummers van die kant
+    by_tracks = tracks_side(all_lines)
+    return by_tracks if not choices or by_tracks in choices else None
 
 
 def assign_printed_sides(named):
@@ -1031,6 +1062,10 @@ def main():
             main_ = json.loads(D.get(f'https://api.discogs.com/masters/{mid.group(1)}')).get('main_release')
             rid = re.search(r'/release/(\d+)', f'/release/{main_}') if main_ else None
         rel = json.loads(D.get(f'https://api.discogs.com/releases/{rid.group(1)}')) if rid else {}
+        for t in rel.get('tracklist', []):
+            m = re.match(r'\s*([A-D])\d', t.get('position') or '', re.I)
+            if m and t.get('title') and norm_title(t['title']):
+                SIDE_TRACKS.setdefault('side' + m[1].lower(), []).append(norm_title(t['title']))
         if not fmt:
             fmt = 'cd' if any((f.get('name') or '').lower() == 'cd' for f in rel.get('formats', [])) else 'vinyl'
         codes = [re.sub(r'\D', '', i.get('value', '')) for i in rel.get('identifiers', []) if i.get('type') == 'Barcode']
