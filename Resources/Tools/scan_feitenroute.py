@@ -1140,6 +1140,44 @@ def paste_label(raw, scan_path, dpi, others=(), expand_mm=None, label_data=None)
             + shadow_note + (f'; {compose_note}' if compose_note else '')), None
 
 
+def paper_on_lid(raw, facts):
+    """Sleeve 0.5.57 - feit: wit papier op de witte klep van de scanner heeft geen zichtbare rand. Who's Your Momma boekje,
+    pagina 3 en 4 (songteksten, wit tot aan de rand): het papier 252-254, de klep ±230, en de snede kwam 4-6 mm binnen de
+    rand (293,9 en 296,2 mm tegen ±300) terwijl het als GOED gemeld werd. Is het papier vlak binnen de snede bijna even licht
+    als de achtergrond vlak erbuiten (minder dan 12 L-punten verschil op een zijde), dan is de rand niet te zien: twijfel,
+    met de reden. Met donker papier erachter is het verschil groot en blijft het stil. Geeft de reden of None."""
+    box = (facts or {}).get('precise_mm') or (facts or {}).get('box_mm')
+    try:
+        dpi = float(json.load(open(raw + '.scans.json')).get('dpi') or 0)
+    except (OSError, ValueError):
+        dpi = 0
+    if not box or len(box) < 4 or not dpi:
+        return None
+    im = cv2.imread(raw, cv2.IMREAD_UNCHANGED)
+    if im is None:
+        return None
+    k = 4; im = im[::k, ::k]; pm = dpi / 25.4 / k
+    a_ = im[:, :, 3] > 0 if im.ndim == 3 and im.shape[2] == 4 else np.ones(im.shape[:2], bool)
+    L = cv2.cvtColor(np.ascontiguousarray(im[:, :, :3]), cv2.COLOR_BGR2LAB)[:, :, 0].astype(np.float32) * 100 / 255
+    x0, y0, w0, h0 = (v * pm for v in box[:4]); x1, y1 = x0 + w0, y0 + h0; H_, W_ = L.shape
+    def band(xa, xb, ya, yb):
+        xa, xb, ya, yb = (int(round(v)) for v in (max(0, xa), min(W_, xb), max(0, ya), min(H_, yb)))
+        if xb - xa < 3 or yb - ya < 3:
+            return None
+        sel = a_[ya:yb, xa:xb]
+        return float(np.median(L[ya:yb, xa:xb][sel])) if sel.sum() > 50 else None
+    near, far = 3 * pm, 8 * pm; mx, my = .25 * w0, .25 * h0
+    sides = {'left': (band(x0 + near, x0 + far, y0 + my, y1 - my), band(x0 - far, x0 - near, y0 + my, y1 - my)),
+             'right': (band(x1 - far, x1 - near, y0 + my, y1 - my), band(x1 + near, x1 + far, y0 + my, y1 - my)),
+             'top': (band(x0 + mx, x1 - mx, y0 + near, y0 + far), band(x0 + mx, x1 - mx, y0 - far, y0 - near)),
+             'bottom': (band(x0 + mx, x1 - mx, y1 - far, y1 - near), band(x0 + mx, x1 - mx, y1 + near, y1 + far))}
+    flat = [n for n, (pin, pout) in sides.items() if pin is not None and pout is not None and pin >= 85 and abs(pin - pout) < 12]
+    if not flat:
+        return None
+    return ('white paper on the white scanner lid (' + ', '.join(flat) + ' edge): the paper edge cannot be seen clearly, so the '
+            'size may be too small; scan it again with dark paper behind it')
+
+
 def facts_levelled(crop):
     try:
         return bool(json.load(open(crop + '.feiten.json')).get('seam_levelled'))
@@ -1486,6 +1524,10 @@ def main():
         facts = json.load(open(crop + '.feiten.json'))
     except (OSError, ValueError):
         facts = None
+    white_on_white = paper_on_lid(raw, facts) if (fmt == 'vinyl' and feit_part == 'insert' and result.get('paper_white')
+                                                  and facts and facts.get('verdict') != 'FOUT') else None
+    if white_on_white:
+        result['why'].append(white_on_white)
     # Feit: een cd-onderdeel heeft de maat van zijn verpakking. Past het niet bij de jewel case
     # (bv. de 'back' is een vierkant kaartje zonder zijflappen, zoals bij een promo), dan bepaalt
     # de gemeten vorm welke verpakking het is: slim jewel (kaartje ±121), kartonnen hoesje (±127),

@@ -82,6 +82,7 @@ VINYL_RIM_MM = 0.75              # plaat (0.5.54): snede zoveel binnen de gemete
                                  # vond per richting de buitenrand of een stap in de rand (US groen 295,1/293,4, HNY rood 295,1/293,8).
                                  # Met de 2 mm rand eraf (VINYL_INSET_MM) eindigt het beeld 2,75 mm binnen de buitenrand: voorbij de
                                  # afgeronde rand, en op de maat die kant A in het archief al had.
+VINYL_INSET_MM = 2.0             # zoveel gaat er daarna nog rondom af (scan_feitenroute.VINYL_INSET_MM, zelfde waarde)
 FLAT_START = os.environ.get('SLEEVE_FLAT_START', '1') != '0'   # snijden waar de kleur van het vlakke vinyl begint (0.5.32)
 FLAT_DE = 3.0                    # ... binnen zoveel ΔE van het vlakke vinyl telt als vlak
 EDGE_FLOOR = 3.0                 # kleinste sprong (Sobel) die een rand kan zijn; wit op wit is zwak, dus laag
@@ -1302,7 +1303,14 @@ def main():
                     f2 = flat_start(bgr, alpha, X, Y, r_outer, px_mm)
                     if f2 is not None and (flat is None or f2 > flat):
                         flat = f2
-                if flat is not None and flat <= 2.5 and r_outer - (flat + 0.1) * px_mm < rr:
+                # Sleeve 0.5.57 - feit: na deze snede gaat er bij een plaatkant nog VINYL_INSET_MM rondom af (scan_feitenroute),
+                # het beeld eindigt dus VINYL_RIM_MM + VINYL_INSET_MM (2,75 mm) binnen de buitenrand. Een gemeten rand die
+                # daarbinnen blijft valt er al buiten; hem toch meetellen maakte kant A en B van één plaat ongelijk
+                # (Together Alone 2022 geel met lichtcorrectie: A rand 1,06 mm, B niets gevonden: 294,8 / 295,5 mm).
+                if flat is not None:
+                    result['rim_measured_mm'] = round(flat, 2)
+                if (flat is not None and flat <= 2.5 and r_outer - (flat + 0.1) * px_mm < rr
+                        and flat + 0.1 > VINYL_RIM_MM + VINYL_INSET_MM):
                     rr = r_outer - (flat + 0.1) * px_mm
                     result['rim_mm'] = round(flat, 2)
             if a.cut_circle:
