@@ -20,6 +20,7 @@ export PYTHONDONTWRITEBYTECODE=1
 "$RUNTIME_PY" Tests/check_insert_sheets.py
 "$RUNTIME_PY" Tests/check_barcode_read.py
 "$RUNTIME_PY" Tests/check_upright_numbering.py
+"$RUNTIME_PY" Tests/check_disc_loose_edge.py
 "$RUNTIME_PY" Tests/check_colour_panel.py
 "$RUNTIME_PY" Tests/check_icc.py
 for check in bridge audits progress cancel circle_edit memory scratch scratch_work release_advice blend fields handoff preview_cache workers facts_fixes source_checks label_material label_orientation paper_detail; do

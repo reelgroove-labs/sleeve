@@ -6,9 +6,9 @@ release. With a queue, projects and a final review.
 
 ![Sleeve](Artwork/Sleeve.png)
 
-## Version 0.5.53
+## Version 0.5.54
 
-New in 0.5.53: lyric sheets and other inserts are named without sleeve scans, and a failed barcode read is said with its reason. 0.5.52: a stitched or watermarked file (PTGui, Microsoft ICE, …) is recognised from its EXIF Software field and left out of the stacks. 0.5.51: the app puts a sticker on the shrink wrap, a nearly blank piece of a sheet and separately scanned booklets in the right slots itself. 0.5.50: on a label nearly the colour of the vinyl, the paper edge is also confirmed by texture.
+New in 0.5.54: side A and side B of one record are cut to the same size (within 0.1 mm), at a fixed distance inside the measured outer edge. 0.5.53: lyric sheets and other inserts are named without sleeve scans, and a failed barcode read is said with its reason. 0.5.52: a stitched or watermarked file (PTGui, Microsoft ICE, …) is recognised from its EXIF Software field and left out of the stacks. 0.5.51: the app puts a sticker on the shrink wrap, a nearly blank piece of a sheet and separately scanned booklets in the right slots itself. 0.5.50: on a label nearly the colour of the vinyl, the paper edge is also confirmed by texture.
 
 New in 0.5.48: the side of a separate label scan is read again when text recognition was still starting up, and an unread side is reported in the slot.
 
