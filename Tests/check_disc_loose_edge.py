@@ -1,4 +1,4 @@
-"""Plaatmaat (0.5.54), feit: kant A en B van één plaat zijn even groot.
+"""Plaatmaat (0.5.54, 0.5.57), feit: kant A en B van één plaat zijn even groot.
 
 US groen (Urban Solitude 2023 moss green) kreeg kant A 295,1 en kant B 293,4 mm, terwijl de plaat op beide kanten
 300,5 mm gemeten werd. De snede (binnenkant van de afgeronde rand) is de kleinste afstand over de richtingen; op kant B
@@ -15,7 +15,7 @@ HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'Resources
 DPI = 200; pm = DPI / 25.4; R = 150.2 * pm; N = int(320 * pm)
 
 
-def disc(notch, shine=0):
+def disc(notch, shine=0, shadow=False):
     yy, xx = np.mgrid[0:N, 0:N].astype(np.float32); c = N / 2
     d = np.hypot(xx - c, yy - c); ang = (np.degrees(np.arctan2(yy - c, xx - c)) + 360) % 360
     edge = np.full_like(d, R)
@@ -26,6 +26,8 @@ def disc(notch, shine=0):
     img[inside] = 40                                            # vlak vinyl
     rim = inside & (d > edge - 0.6 * pm)                        # smalle glans op de afgeronde rand
     img[rim] = 70
+    if shadow:                                                  # schaduw in de afgeronde rand, 1,6 tot 0,6 mm binnen de rand
+        img[inside & (d > edge - 1.6 * pm) & (d <= edge - 0.6 * pm)] = 22
     if shine:                                                   # lichtkant: glans van 1,6 tot 0,6 mm binnen de rand
         img[inside & (d > edge - 1.6 * pm) & (d <= edge - 0.6 * pm) & (ang < shine)] = 170
     img = cv2.GaussianBlur(img, (0, 0), 0.6).astype(np.uint8)
@@ -49,5 +51,9 @@ plain, dented = cut(disc(False), work, 'plain'), cut(disc(True), work, 'dented')
 little, much = cut(disc(False, 10), work, 'little'), cut(disc(False, 150), work, 'much')
 assert abs(plain - dented) <= 0.3, f'een deuk in 25 graden van de buitenrand veranderde de snede: {plain} -> {dented} mm'
 assert abs(little - much) <= 0.3, f'glans op meer van de rand veranderde de snede: {little} (10 graden) -> {much} (150 graden) mm'
+shaded = cut(disc(False, 0, True), work, 'shaded')
+# 0.5.57: een schaduw in de rand die binnen de 2,75 mm blijft die er toch af gaat, verandert de snede niet
+# (Together Alone 2022 geel met lichtcorrectie: A 294,8 / B 295,5 mm doordat alleen op A zo'n rand gemeten werd)
+assert abs(plain - shaded) <= 0.3, f'schaduw in de rand (1 mm) veranderde de snede: {plain} -> {shaded} mm'
 assert abs(plain - (2 * 150.2 - 1.5)) <= 0.4, f'snede niet 0,75 mm binnen de buitenrand: {plain} mm'
-print(f'plaat: snede {plain} mm, met deuk in de buitenrand {dented} mm, glans op 10/150 graden {little}/{much} mm')
+print(f'plaat: snede {plain} mm, met deuk in de buitenrand {dented} mm, glans op 10/150 graden {little}/{much} mm, schaduw in de rand {shaded} mm')
