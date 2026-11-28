@@ -63,7 +63,7 @@ struct StudioView: View {
                     Button("Open Project…"){model.pickProject()}
                     Button(model.projectURL==nil ? "Save Project…" : "Save As…"){model.saveProjectAs()}
                     ForEach(model.recentProjects,id:\.self){url in Button(url.deletingPathExtension().lastPathComponent){model.openProject(url)}}
-                } label:{Label("Project",systemImage:"folder")}.disabled(model.busy)
+                } label:{Label("Project",systemImage:"folder")}.fixedSize().disabled(model.busy)
                 Button{model.showQueue=true} label:{Label("Queue (\(model.pendingCount))",systemImage:"list.bullet.rectangle")}
                 Button {model.newEdition()} label:{Label("New Release",systemImage:"plus")}.disabled(model.busy)
                 Button {model.helpTopic=nil;model.panel = .help} label:{Label("Help",systemImage:"questionmark.circle")}
@@ -222,7 +222,11 @@ struct StudioView: View {
             TextField("Project / release name",text:$model.editionTitle).textFieldStyle(.roundedBorder)
             HStack{Text(model.projectURL?.lastPathComponent ?? "Project not saved yet").lineLimit(1).truncationMode(.middle);Spacer();if model.projectURL != nil {Image(systemName:"externaldrive.badge.checkmark")}}.font(.caption).foregroundStyle(.secondary)
             if model.projectURL != nil {Text(model.projectSaveText).font(.caption).foregroundStyle(.secondary)}
-            sectionTitle("01", "Release & reference")
+            // Sleeve 0.5.59: indeling op volgorde van werken: 01 release (link, keuze, voorstellen), 02 indeling van de scans,
+            // 03 instellingen (format, verpakking, Discogs, vinyl). Vinyl-opties alleen als het geen cd is.
+            sectionTitle("01", "Release")
+            TextField("Discogs link (optional for scans)",text:$model.discogs).textFieldStyle(.roundedBorder).disabled(model.busy)
+                .onChange(of:model.discogs){ model.cancelReleaseAdvice();model.proposals=[];model.references=[];if model.referenceFromDiscogs {model.referenceURL=nil}}
             if model.mode == .scans {
                 VStack(alignment:.leading,spacing:6) {
                     if let info=model.releaseInfo,model.releaseConfirmed {
@@ -232,34 +236,42 @@ struct StudioView: View {
                         Text(model.releaseConfirmed ? "No Discogs release – choose the format and packaging below." : "No release confirmed yet.").font(.caption).foregroundStyle(model.releaseConfirmed ? Color.secondary : Color.orange)
                     }
                     Button(model.releaseInfo==nil ? "Choose Release…" : "Change Release…"){model.panel = .release}.disabled(model.busy || model.inputs.isEmpty)
+                    if !model.inputs.isEmpty {
+                        HStack(spacing:6) {
+                            if model.discovering {ProgressView().controlSize(.small)}
+                            Text(model.discovering ? "Identifying the release…" : model.adviceCandidates.isEmpty ? "Not sure which release?" : "\(model.adviceCandidates.count) possible Discogs releases").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Button("View Release Suggestions…"){model.panel = .advice}.font(.caption)
+                    }
                 }.padding(10).frame(maxWidth:.infinity,alignment:.leading).background(studioAccent.opacity(0.07),in:RoundedRectangle(cornerRadius:8))
             }
-            TextField("Discogs link (optional for scans)",text:$model.discogs).textFieldStyle(.roundedBorder).disabled(model.busy)
-                .onChange(of:model.discogs){ model.cancelReleaseAdvice();model.proposals=[];model.references=[];if model.referenceFromDiscogs {model.referenceURL=nil}}
+            if model.mode == .scans && !model.inputs.isEmpty {
+                sectionTitle("02", "Arrangement")
+                Text(model.arrangementSummary).font(.caption).foregroundStyle(.secondary)
+                Button("Arrange Scans…"){model.panel = .arrange}.help("Drag the scans into slots: Front, Back, Side A, Side B …")
+            }
             if model.mode == .scans {
+                sectionTitle(model.inputs.isEmpty ? "02" : "03", "Settings")
                 Text("Format").font(.system(size:12,weight:.semibold))
                 Picker("Format",selection:$model.mediaFormat){Text("Automatic").tag("auto");Text("CD").tag("cd");Text("Vinyl").tag("vinyl")}
                     .pickerStyle(.segmented).labelsHidden().disabled(model.busy)
                 Text(model.mediaFormat=="auto" ? "From the Discogs link, or CD when there is a CD slot." : "You chose \(model.mediaFormat=="cd" ? "CD" : "vinyl"): Sleeve cuts to those sizes, with or without Discogs.").font(.caption).foregroundStyle(.secondary)
+                Text("Packaging").font(.system(size:12,weight:.semibold))
                 Picker("Packaging",selection:$model.packaging) {
                     Text("From Discogs").tag("auto")
                     ForEach(packagingChoices,id:\.0) {Text($0.1).tag($0.0)}
-                }.disabled(model.busy)
-                Text("Use of Discogs").font(.system(size:12,weight:.semibold))
+                }.labelsHidden().disabled(model.busy)
+                Text("Discogs").font(.system(size:12,weight:.semibold))
                 Toggle("Use file names",isOn:$model.useNames)
                 Toggle("Rotate cover and record correctly",isOn:$model.useStand)
-                Toggle(isOn:$model.enlargeLabel){VStack(alignment:.leading,spacing:2){Text("Enlarge paper label by 1 mm (retouch)");Text("Enlarges the label and its printing by 1 mm all around to cover the old edge. Adds 2 mm to its diameter; keeps the centre hole. Off preserves the measured size.").font(.caption).foregroundStyle(.secondary)}}
-                Toggle(isOn:$model.lightCorrection){VStack(alignment:.leading,spacing:2){Text("Light correction (transparent vinyl)");Text("Removes the scanner’s fine vertical stripes from record sides and keeps each scan’s own exposure (no darker patches on clear vinyl). Covers are not changed.").font(.caption).foregroundStyle(.secondary)}}
-                Text("Check your results first. You can then fine-tune cover and record colors under ‘Adjust Color’.").font(.caption).foregroundStyle(.secondary)
-            }
-            if model.mode == .scans && !model.inputs.isEmpty {
-                VStack(alignment:.leading,spacing:7) {
-                    Text("Arrangement").font(.system(size:12,weight:.semibold))
-                    Text(model.arrangementSummary).font(.caption).foregroundStyle(.secondary)
-                    Button("Arrange Scans…"){model.panel = .arrange}.help("Drag the scans into slots: Front, Back, Side A, Side B …")
+                if model.mediaFormat != "cd" {
+                    Text("Vinyl").font(.system(size:12,weight:.semibold))
+                    Toggle(isOn:$model.lightCorrection){VStack(alignment:.leading,spacing:2){Text("Transparent vinyl");Text("Turns on light correction: no scanner stripes or darker patches on clear vinyl. Covers are not changed.").font(.caption).foregroundStyle(.secondary)}}
+                    Toggle(isOn:$model.enlargeLabel){VStack(alignment:.leading,spacing:2){Text("Enlarge paper label by 1 mm");Text("Retouch: covers the old label edge (+2 mm diameter, centre hole kept). Off keeps the measured size.").font(.caption).foregroundStyle(.secondary)}}
                 }
+                Text("Check your results first. Fine-tune colors afterwards under ‘Adjust Color’.").font(.caption).foregroundStyle(.secondary)
             }
-            if !model.inputs.isEmpty {
+            if model.mode != .scans && !model.inputs.isEmpty {
                 VStack(alignment:.leading,spacing:7) {
                     HStack {
                         if model.discovering {ProgressView().controlSize(.small)}
@@ -275,7 +287,7 @@ struct StudioView: View {
                 if !model.proposals.isEmpty {Label("\(model.proposals.count) names to review",systemImage:"checkmark.circle").font(.caption).foregroundStyle(studioAccent)}
             }
             if let item=model.selectedInput,!model.showResults {
-                Divider();sectionTitle(model.mode == .colour ? "03" : "02","Selected image")
+                Divider();sectionTitle(model.mode == .scans ? (model.inputs.isEmpty ? "03" : "04") : "02","Selected image")
                 Text(item.title).font(.caption).lineLimit(2)
                 if model.mode == .names {
                     Picker("Part",selection:Binding(get:{model.selectedInput?.part ?? "front"},set:{model.updateSelectedPart($0)})) {ForEach(partChoices,id:\.self){Text(partLabel($0)).tag($0)}}

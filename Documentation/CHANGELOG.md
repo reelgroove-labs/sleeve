@@ -1,3 +1,10 @@
+# 0.5.59 — Right column in the order of work; HEIC colour photo
+
+- **Right column (Process Scans) in the order of work.** 01 Release: the Discogs link first, then the chosen release and, once there are images, the release suggestions (they were below the arrangement). 02 Arrangement (when there are images). 03 Settings: Format, Packaging (now with its own heading), Discogs (file names, rotating), and Vinyl. The vinyl options were under "Use of Discogs" and also showed for CD; they now have their own heading and are hidden when the format is CD. The same setting had two names ("Transparent vinyl" in the release window, "Light correction (transparent vinyl)" here); it is now "Transparent vinyl" in both, with the light correction in its explanation. Shorter explanations, so they are not cut off. Section numbers run on without a gap.
+- **The Project button in the top bar is compact** (it stretched across the whole bar).
+- **An iPhone photo (HEIC/HEIF) works as colour reference.** The colour step could not open it ("cannot identify image file", Hotel New York 2022 magenta); Sleeve now converts it to JPEG first (sips, same image).
+- Check: `Tests/check_colour_heic_reference.py`.
+
 # 0.5.58 — Label level without rim text; one record, one size
 
 - **A record side is set straight on its tracklist only.** Hotel New York 2023 yellow side B stood about 8° off. The rim text around the label was read too, and "ALL RIGHTS" was taken for the track title "Alright"; the rough angle was also more than 7.5° off and levelling stopped after 4 steps of at most 4°. Lines outside the rim radius (44 mm) no longer count, and levelling goes on until the lines lie straight (up to 10 steps). Side B now stands straight.
