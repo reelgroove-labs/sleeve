@@ -629,10 +629,20 @@ def colour_destination(source):
   except (OSError,ValueError,TypeError):break
  return current.parent
 
+def readable_reference(ref,work):
+ """Sleeve 0.5.59: een iPhone-foto (HEIC/HEIF) kan de kleurstap niet openen (Hotel New York 2022 magenta: 'cannot identify image
+ file IMG_4532.HEIC'). Dan met sips naar een JPEG in de werkmap: zelfde beeld, zelfde kleurprofiel. Andere foto's blijven zo."""
+ if ref.suffix.lower() not in ('.heic','.heif'):return ref
+ out=Path(work)/(ref.stem+'_referentie.jpg')
+ r=subprocess.run(['/usr/bin/sips','-s','format','jpeg','-s','formatOptions','100',str(ref),'--out',str(out)],capture_output=True,text=True)
+ if r.returncode or not out.is_file():raise ValueError(f'The reference photo {ref.name} could not be read (HEIC to JPEG failed).')
+ return out
+
 def colour(req,rows,work):
  import scan_colour as C
  ref=Path(req.get('reference','')).expanduser()
  if not ref.is_file():raise ValueError('First choose your own photo or a Discogs reference photo.')
+ ref=readable_reference(ref,work)
  strength=float(req.get('strength',1))
  if not 0<=strength<=1:raise ValueError('The color strength must be between 0 and 100%.')
  lightness=float(req.get('lightness',0));vividness=float(req.get('vividness',1))
