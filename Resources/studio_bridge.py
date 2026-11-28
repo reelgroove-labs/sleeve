@@ -229,6 +229,27 @@ def side_result_for(output,path):
   return next((r for r in data.get('results',[]) if r.get('path') and Path(r['path'])==Path(path)),None)
  except (OSError,ValueError,TypeError):return None
 
+def same_record_size(by_part):
+ """Sleeve 0.5.58 - feit: kant A en B van één plaat zijn even groot. De buitenrand van transparant vinyl wordt per richting
+ niet overal even scherp gezien (Hotel New York 2022 magenta: in dezelfde sectoren tot 1 mm naar binnen, per kant net andere
+ richtingen op de cirkel: A 294,6 / B 295,3 mm). Scheelt het meer dan 0,3 mm, dan krijgt de grootste kant de maat van de
+ kleinste (die blijft zeker binnen de afgeronde rand), met de reden erbij. Geeft de aangepaste uitkomsten."""
+ sys.path.insert(0,str(TOOLS));import scan_feitenroute as FR_
+ out=[]
+ for pa,pb in (('sidea','sideb'),('sidec','sided')):
+  ra,rb=(by_part.get(pa) or [None])[0],(by_part.get(pb) or [None])[0]
+  if not(ra and rb and ra.get('size_mm') and rb.get('size_mm') and ra.get('dpi')):continue
+  da,db=ra['size_mm'][0],rb['size_mm'][0]
+  if abs(da-db)<=0.3:continue
+  big,small=(ra,rb) if da>db else (rb,ra)
+  try:
+   new_mm=FR_.trim_disc(big['path'],small['size_mm'][0],float(big['dpi']))
+  except Exception as e:
+   emit('log',message=f'{big.get("part")}: could not be trimmed to the size of {small.get("part")}: {e}');continue
+  big['applied']=((big.get('applied') or '')+f' cut to the size of side {small.get("part")[4:].upper()} (same record: {max(da,db)} -> {new_mm} mm)').strip()
+  big['size_mm']=[new_mm,new_mm];out.append(big)
+ return out
+
 def feiten_part(req,part,files,output,work,decision=None,fmt='',release_dpi=0.0,target=None,occurrence=1,label_enlarged_mm=0.0):
  """Eén onderdeel door de feitenroute (scan_feitenroute.py); geeft de uitkomst."""
  cmd=[sys.executable,str(TOOLS/'scan_feitenroute.py'),'--part',part,'--out',str(output),'--work',str(work),*files]
@@ -454,6 +475,7 @@ def feiten_scan(req,rows,layout,work):
   if r.get('path') and not r.get('panels'):by_part.setdefault(r.get('part'),[]).append(r)
  fr,bk=(by_part.get('front') or [None])[0],(by_part.get('back') or [None])[0]
  is_cd=str(fmt).startswith('cd') or any(str(p).startswith('cd') for p in by_part)
+ if not is_cd:changed+=same_record_size(by_part)
  if fr and bk and fr.get('size_mm') and bk.get('size_mm') and not is_cd:   # cd: boekje en achterkant zijn niet even groot
   a,b=dims(fr),dims(bk)
   if max(abs(a[0]-b[0]),abs(a[1]-b[1]))>SAME_PRINT_MM:

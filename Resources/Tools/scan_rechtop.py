@@ -410,10 +410,16 @@ def level_label(label, coarse, words):
     Meten, bijdraaien en opnieuw meten tot de regels recht liggen (de grove stand
     kan tot ±7,5 graad naast zitten)."""
     n = label.shape[0]; c = (n / 2, n / 2); angle = coarse; how = 'none'
-    for _ in range(4):
+    # Sleeve 0.5.58 - feit: de randtekst loopt rond het label buiten RIM_MM; een woord daarin kan op een tracktitel lijken
+    # ('ALL RIGHTS' ~ 'Alright', Hotel New York 2023 geel kant B) en ligt nooit recht. Alleen regels binnen RIM_MM tellen. En
+    # de grove stand kan verder dan 7,5 graad naast zitten (kant B: ±20 graden, per stap hooguit 4): doormeten tot het recht ligt.
+    inner = RIM_MM / (LABEL_MM / 2) * n / 2
+    def within(l):
+        x0, y0, x1, y1 = l['box']; return math.hypot((x0 + x1) / 2 - n / 2, (y0 + y1) / 2 - n / 2) < inner
+    for _ in range(10):
         R = cv2.getRotationMatrix2D(c, -angle, 1.0)
         view = cv2.warpAffine(label, R, (n, n), flags=cv2.INTER_CUBIC, borderValue=(255, 255, 255))
-        lines = [l for l in label_lines(view, words) if len(re.findall(r'\w', l['text'])) >= 3]
+        lines = [l for l in label_lines(view, words) if len(re.findall(r'\w', l['text'])) >= 3 and within(l)]
         titles = [l for l in lines if any(found(norm(w), norm(l['text'])) for w in words[:2])]
         tracks = [l for l in lines if any(found(norm(w), norm(l['text'])) for w in words[2:])]
         # Feit (André, 8 nov): de tracklist staat op een label (bijna) altijd recht.

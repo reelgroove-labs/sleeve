@@ -1140,6 +1140,23 @@ def paste_label(raw, scan_path, dpi, others=(), expand_mm=None, label_data=None)
             + shadow_note + (f'; {compose_note}' if compose_note else '')), None
 
 
+def trim_disc(path, target_mm, dpi):
+    """Sleeve 0.5.58: een uitgesneden plaatkant (RGBA, midden van het beeld) rondom kleiner maken tot target_mm: midden
+    uitsnijden en dezelfde zachte cirkelrand als bij het snijden. Profiel en dpi blijven. Geeft de nieuwe maat in mm."""
+    import scan_feiten as SF
+    from PIL import Image
+    with Image.open(path) as im:
+        info = {k: im.info[k] for k in ('icc_profile', 'dpi') if k in im.info}
+        arr = np.array(im.convert('RGBA'))
+    n = arr.shape[0]; m = int(round(target_mm * dpi / 25.4))
+    if arr.shape[0] != arr.shape[1] or m >= n or m < n - int(3 * dpi / 25.4):
+        raise ValueError(f'unexpected sizes ({n} px -> {m} px)')
+    b = (n - m) // 2; out = arr[b:b + m, b:b + m].copy()
+    np.minimum(out[:, :, 3], SF.soft_disc(m, m / 2), out=out[:, :, 3])
+    tmp = path + '.trim.png'; Image.fromarray(out, 'RGBA').save(tmp, **info); os.replace(tmp, path)
+    return round(m / dpi * 25.4, 1)
+
+
 def paper_on_lid(raw, facts):
     """Sleeve 0.5.57 - feit: wit papier op de witte klep van de scanner heeft geen zichtbare rand. Who's Your Momma boekje,
     pagina 3 en 4 (songteksten, wit tot aan de rand): het papier 252-254, de klep ±230, en de snede kwam 4-6 mm binnen de
