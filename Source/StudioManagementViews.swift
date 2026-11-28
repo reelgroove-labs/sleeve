@@ -10,7 +10,7 @@ struct StudioQueueView: View {
                 Spacer();Button("Close"){model.showQueue=false}.keyboardShortcut(.cancelAction)
             }
             if model.queue.isEmpty {
-                VStack(spacing:12){Image(systemName:"list.bullet.rectangle").font(.system(size:36));Text("No tasks queued yet");Text("Choose images and settings on the workspace and click ‘Add This Task to the Queue’.").font(.caption).foregroundStyle(.secondary)}.frame(maxWidth:.infinity,maxHeight:.infinity)
+                VStack(spacing:12){Image(systemName:"list.bullet.rectangle").font(.system(size:36));Text("No tasks queued yet");Text("Choose images and settings on the workspace and click ‘Add to Queue’.").font(.caption).foregroundStyle(.secondary)}.frame(maxWidth:.infinity,maxHeight:.infinity)
             } else {
                 List {
                     ForEach(model.queue) {item in

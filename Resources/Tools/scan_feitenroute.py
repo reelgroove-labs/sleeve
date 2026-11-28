@@ -591,6 +591,7 @@ def sticker_route(a, decision):
     for f in (crop, up):
         if os.path.exists(f):
             os.remove(f)
+    note_fast_reading(result)
     print(json.dumps(result, ensure_ascii=False))
 
 
@@ -1140,6 +1141,15 @@ def paste_label(raw, scan_path, dpi, others=(), expand_mm=None, label_data=None)
             + shadow_note + (f'; {compose_note}' if compose_note else '')), None
 
 
+def note_fast_reading(result):
+    """Sleeve 0.5.60: werd tekst (kant, stand, label) alleen snel gelezen omdat het nauwkeurige model van macOS niet werkte
+    (28 nov: 'ANECompilerService ... mkdir failed'), dan staat dat in de uitkomst; de stand en kant zijn dan minder zeker."""
+    import scan_rechtop as R_
+    if getattr(R_, 'FAST_READS', 0):
+        result['ocr_fast_only'] = True
+        result['applied'] = (result.get('applied', '') + ' text read in fast mode only (accurate macOS text recognition unavailable)').strip()
+
+
 def trim_disc(path, target_mm, dpi):
     """Sleeve 0.5.58: een uitgesneden plaatkant (RGBA, midden van het beeld) rondom kleiner maken tot target_mm: midden
     uitsnijden en dezelfde zachte cirkelrand als bij het snijden. Profiel en dpi blijven. Geeft de nieuwe maat in mm."""
@@ -1291,6 +1301,7 @@ def label_route(a, decision):
     Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGRA2RGBA)).save(path, dpi=(dpi, dpi))
     result.update(path=path, dpi=dpi, size_mm=[round(image.shape[1] / dpi * 25.4, 1),
                                                round(image.shape[0] / dpi * 25.4, 1)])
+    note_fast_reading(result)
     print(json.dumps(result, ensure_ascii=False))
 
 
@@ -1980,6 +1991,7 @@ def main():
     for f in (raw, raw + '.scans.json', level_raw, level_raw + '.scans.json', edge_raw, edge_raw + '.scans.json', edge_crop, edge_crop + '.feiten.json', crop, crop + '.feiten.json', up, render_crop):   # tussenbestanden opruimen (1200 dpi: ±1,5 GB)
         if os.path.exists(f):
             os.remove(f)
+    note_fast_reading(result)
     print(json.dumps(result, ensure_ascii=False))
 
 

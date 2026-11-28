@@ -27,6 +27,8 @@ export PYTHONDONTWRITEBYTECODE=1
 "$RUNTIME_PY" Tests/check_label_level_rim.py
 "$RUNTIME_PY" Tests/check_same_record_size.py
 "$RUNTIME_PY" Tests/check_colour_heic_reference.py
+"$RUNTIME_PY" Tests/check_fast_reading_note.py
+"$RUNTIME_PY" Tests/check_name_template.py
 "$RUNTIME_PY" Tests/check_colour_panel.py
 "$RUNTIME_PY" Tests/check_icc.py
 for check in bridge audits progress cancel circle_edit memory scratch scratch_work release_advice blend fields handoff preview_cache workers facts_fixes source_checks label_material label_orientation paper_detail; do

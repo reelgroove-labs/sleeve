@@ -97,7 +97,7 @@ struct StudioView: View {
                     if !model.displayItems.isEmpty {filmstrip}
                 }.frame(minWidth:500,maxWidth:.infinity)
                 Divider()
-                VStack(spacing:0) {ScrollView { inspector.padding(20) };Divider();saveControls.padding(20)}.frame(width:302).background(Color(nsColor:.controlBackgroundColor))
+                VStack(spacing:0) {ScrollView { inspector.padding(20) };Divider();saveControls.padding(.horizontal,20).padding(.vertical,14)}.frame(width:302).background(Color(nsColor:.controlBackgroundColor))
             }
             Divider()
             footer
@@ -263,6 +263,13 @@ struct StudioView: View {
                 }.labelsHidden().disabled(model.busy)
                 Text("Discogs").font(.system(size:12,weight:.semibold))
                 Toggle("Use file names",isOn:$model.useNames)
+                if model.useNames {
+                    HStack {
+                        TextField("Name pattern",text:$model.nameTemplate).textFieldStyle(.roundedBorder).font(.system(size:11,design:.monospaced))
+                        if model.nameTemplate != StudioModel.defaultNameTemplate {Button("Reset"){model.nameTemplate=StudioModel.defaultNameTemplate}.font(.caption)}
+                    }
+                    Text("Parts, joined with _: year, title, format, label, country, colour, variant, catno, date, artist, part. Example: 2016_hotel_new_york_vinyl_musiconvinyl_red_sidea").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
+                }
                 Toggle("Rotate cover and record correctly",isOn:$model.useStand)
                 if model.mediaFormat != "cd" {
                     Text("Vinyl").font(.system(size:12,weight:.semibold))
@@ -302,17 +309,21 @@ struct StudioView: View {
         }.font(.system(size:12)).disabled(model.busy)
     }
     var saveControls: some View {
-        VStack(alignment:.leading,spacing:12) {
+        VStack(alignment:.leading,spacing:8) {
             sectionTitle("↗",model.mode == .colour ? "Save New Color" : "Save")
             if model.mode == .colour {
                 Label("Next to the source images",systemImage:"folder")
             } else {
             Button {model.chooseOutput()} label:{HStack{Image(systemName:"folder");Text(model.outputFolder?.lastPathComponent ?? "Choose an Output Folder…").lineLimit(1);Spacer();Image(systemName:"chevron.down").font(.caption2)}}.disabled(model.busy)
             }
-            Text(model.mode == .colour ? "New color copies go into the same folder as the chosen images, with _kleur in the file name. Originals are kept." : "A new subfolder for every run. Originals are kept.").font(.caption).foregroundStyle(.secondary)
-            Button {model.start()} label:{Text(model.mode == .scans ? "Process Scans" : model.mode == .colour ? model.colourActionTitle : "Save with New Names").frame(maxWidth:.infinity).padding(.vertical,5)}.buttonStyle(.borderedProminent).controlSize(.large).disabled(!model.canStart)
-            Button("Add This Task to the Queue"){model.enqueueCurrent()}.disabled(!model.canStart)
-            if model.projectURL==nil {Button("Save as Project…"){model.saveProjectAs()}.font(.caption)}
+            // Sleeve 0.5.60: compacter (de instellingen erboven vielen buiten beeld): één regel uitleg, wachtrij en project naast elkaar
+            Text(model.mode == .colour ? "Next to the chosen images, with _kleur. Originals are kept." : "New subfolder for every run. Originals are kept.").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Button {model.start()} label:{Text(model.mode == .scans ? "Process Scans" : model.mode == .colour ? model.colourActionTitle : "Save with New Names").frame(maxWidth:.infinity).padding(.vertical,3)}.buttonStyle(.borderedProminent).controlSize(.large).disabled(!model.canStart)
+            HStack {
+                Button("Add to Queue"){model.enqueueCurrent()}.disabled(!model.canStart).help("Add this task to the queue")
+                Spacer()
+                if model.projectURL==nil {Button("Save as Project…"){model.saveProjectAs()}}
+            }.font(.caption)
             if model.demo {Text("These are reduced sample images for trying out the app.").font(.caption).foregroundStyle(.secondary)}
         }.font(.system(size:12)).disabled(model.busy)
     }

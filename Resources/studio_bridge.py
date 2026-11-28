@@ -507,6 +507,8 @@ def feiten_scan(req,rows,layout,work):
  for r in results:
   if r.get('panels'):files+=[dict(feiten_file(r),path=q['path'],part=q['part']) for q in r['panels']]
   elif r.get('path'):files.append(feiten_file(r))
+ fast=[r.get('part') for r in results if r.get('ocr_fast_only')]
+ if fast:emit('warning',message=f"Text was read in fast mode only for {', '.join(p for p in fast if p)}: the accurate macOS text recognition was unavailable. Check which way up the labels and stickers are, and the sides. Restarting the Mac usually brings it back.")
  (output/'Studio-verwerking.json').write_text(json.dumps({'action':'scan','route':'feiten','format':run_format,'release_dpi':release_dpi,'inputs':rows,'outputs':files,'results':results,'discogs':req.get('discogs','')},ensure_ascii=False,indent=2))
  if not files:raise ValueError('No processed images were made: '+' '.join(f"{r.get('part')}: {'; '.join(r.get('why') or ['no reason'])}." for r in results))
  # Een onderdeel dat niet gemaakt kon worden, heeft geen bestand en staat dus niet in de eindcontrole:
