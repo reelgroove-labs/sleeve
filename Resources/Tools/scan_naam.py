@@ -17,6 +17,22 @@ KLEUREN = ['black', 'white', 'red', 'orange', 'yellow', 'gold', 'silver', 'green
            'magenta', 'clear', 'transparent', 'grey', 'gray', 'brown', 'turquoise', 'cream', 'marbled', 'splatter']
 
 
+DEFAULT_TEMPLATE = 'year_title_format_label_country_variant_part'
+TOKENS = ('year', 'title', 'format', 'label', 'country', 'colour', 'variant', 'catno', 'date', 'artist', 'part')
+
+
+def template():
+    """Het naamsjabloon uit Instellingen (SLEEVE_NAME_TEMPLATE). Onbekende onderdelen tellen niet; zonder 'part' komt het
+    onderdeel er achteraan (anders krijgen voor- en achterkant dezelfde naam)."""
+    import os
+    t = [x for x in (os.environ.get('SLEEVE_NAME_TEMPLATE') or DEFAULT_TEMPLATE).strip().lower().replace(' ', '_').split('_') if x in TOKENS]
+    if not t:
+        return DEFAULT_TEMPLATE
+    if 'part' not in t:
+        t.append('part')
+    return '_'.join(t)
+
+
 def slug(t):
     t = t or ''                                       # Discogs geeft soms null (bv. geen land)
     t = unicodedata.normalize('NFKD', t).encode('ascii', 'ignore').decode().lower()
@@ -75,6 +91,15 @@ def naam(url, kant, extra='', year=''):
     if promo and formaat in ('cd', 'cdsingle', 'maxicd', 'cdr'):
         formaat, promo = 'promocd', False               # zoals in de bestaande namen
     variant = '_'.join(x for x in [kleur, 'promo' if promo else ''] if x)
+    # Sleeve 0.5.60: eigen naamsjabloon (Instellingen, SLEEVE_NAME_TEMPLATE), onderdelen met _ ertussen. Standaard het
+    # collectieschema hieronder; lege onderdelen vallen weg.
+    waarden = {'year': jaar, 'title': titel, 'format': formaat, 'label': label, 'country': land, 'colour': kleur,
+               'variant': '_'.join(x for x in [variant, slug(extra)] if x), 'catno': slug((r.get('labels') or [{}])[0].get('catno')),
+               'date': (r.get('released') or '').replace('-', '') if re.fullmatch(r'\d{4}-\d{2}-\d{2}', r.get('released') or '') else '',
+               'artist': slug(' '.join(a.get('name', '') for a in r.get('artists', [])[:1]).split('(')[0]), 'part': kant}
+    sjabloon = template()
+    if sjabloon != DEFAULT_TEMPLATE:
+        return '_'.join(waarden[t] for t in sjabloon.split('_') if waarden.get(t))
     delen = [jaar, titel, formaat, label, land, variant, slug(extra), kant]
     return '_'.join(x for x in delen if x)
 

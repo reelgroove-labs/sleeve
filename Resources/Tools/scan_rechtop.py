@@ -265,6 +265,9 @@ def text_level(label, angle, r_px, hole_px):
 SLOW_FLAG = os.path.join(tempfile.gettempdir(), 'sleeve-accurate-ocr-slow')
 
 
+FAST_READS = 0       # Sleeve 0.5.60: zoveel keer las dit proces tekst alleen snel (nauwkeurig model van macOS niet beschikbaar)
+
+
 def accurate_is_slow():
     """Hing het nauwkeurige lezen de afgelopen 10 minuten? (gedeeld tussen alle onderdelen)"""
     try:
@@ -297,6 +300,9 @@ def ocr_lines(view):
             if mode == '--boxes' and not out.strip() and time.time() - t0 >= float(os.environ.get('SLEEVE_OCR_ACCURATE_WAIT', 8)) - .5:
                 mark_accurate_slow(); slow = True
             if out.strip() or ocr_unavailable():
+                if out.strip() and mode == '--fast-boxes':
+                    global FAST_READS
+                    FAST_READS += 1                        # Sleeve 0.5.60: alleen snel gelezen (melding in de uitkomst)
                 break
             time.sleep(0.3 * (attempt + 1))
     h, w = view.shape[:2]; lines = []
